@@ -1,1 +1,1 @@
-{"description": "Make the windows transparency", "dependencies": [], "url": "https://github.com/rexdf/SublimeTextTrans", "sublime_text": "*", "platforms": ["windows"], "version": "0.5.0"}
+{"sublime_text": "*", "description": "Make the windows transparency", "version": "1.4.0", "platforms": ["windows"], "url": "https://github.com/vhanla/SublimeTextTrans", "dependencies": []}

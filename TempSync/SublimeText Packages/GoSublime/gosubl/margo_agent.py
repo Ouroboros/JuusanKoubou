@@ -1,7 +1,7 @@
+from . import _dbg
 from . import sh, gs, gsq
 from .margo_common import TokenCounter, OutputLogger, Chan
-from .margo_state import State, make_props
-from .vendor import umsgpack
+from .margo_state import State, make_props, actions
 import os
 import sublime
 import subprocess
@@ -9,9 +9,19 @@ import threading
 import time
 
 ipc_codec = 'msgpack'
-ipc_dec = umsgpack.load
-ipc_enc = umsgpack.dump
-ipc_ignore_exceptions = (umsgpack.InsufficientDataException, BrokenPipeError)
+
+if ipc_codec == 'msgpack':
+	from .vendor import umsgpack
+	ipc_dec = umsgpack.load
+	ipc_enc = umsgpack.dump
+	ipc_ignore_exceptions = (umsgpack.InsufficientDataException, BrokenPipeError)
+elif ipc_codec == 'cbor':
+	from .vendor.cbor_py import cbor
+	ipc_dec = cbor.load
+	ipc_enc = cbor.dump
+	ipc_ignore_exceptions = (BrokenPipeError)
+else:
+	raise Exception('impossibru')
 
 class MargoAgent(threading.Thread):
 	def __init__(self, mg):
@@ -42,6 +52,10 @@ class MargoAgent(threading.Thread):
 			'PATH': psep.join([os.path.join(p, 'bin') for p in gopaths]) + psep + os.environ.get('PATH'),
 		}
 
+		self._mod_ev = threading.Event()
+		self._mod_view = None
+		self._pos_view = None
+
 	def __del__(self):
 		self.stop()
 
@@ -63,7 +77,7 @@ class MargoAgent(threading.Thread):
 		with self.lock:
 			hdls, self.req_handlers = self.req_handlers, {}
 
-		rs = AgentRes(error='agent stopping. request aborted')
+		rs = AgentRes(error='agent stopping. request aborted', agent=self)
 		for rq in hdls.values():
 			rq.done(rs)
 
@@ -105,6 +119,7 @@ class MargoAgent(threading.Thread):
 
 		self.proc = pr.p
 		gsq.launch(self.domain, self._handle_send)
+		gsq.launch(self.domain, self._handle_send_mod)
 		gsq.launch(self.domain, self._handle_recv)
 		gsq.launch(self.domain, self._handle_log)
 		self.started.set()
@@ -139,22 +154,52 @@ class MargoAgent(threading.Thread):
 
 		if exc:
 			with self.lock:
-				del self.req_handlers[rq.cookie]
+				self.req_handlers.pop(rq.cookie, None)
 
-			rq.done(AgentRes(error='Exception: %s' % exc, rq=rq))
+			rq.done(AgentRes(error='Exception: %s' % exc, rq=rq, agent=self))
 
 	def send(self, action={}, cb=None, view=None):
 		rq = AgentReq(self, action, cb=cb, view=view)
 		timeout = 0.200
 		if not self.started.wait(timeout):
-			rq.done(AgentRes(error='margo has not started after %0.3fs' % (timeout), timedout=timeout, rq=rq))
+			rq.done(AgentRes(error='margo has not started after %0.3fs' % (timeout), timedout=timeout, rq=rq, agent=self))
 			return rq
 
 		if not self.req_chan.put(rq):
-			rq.done(AgentRes(error='chan closed', rq=rq))
+			rq.done(AgentRes(error='chan closed', rq=rq, agent=self))
 
 		return rq
 
+	def view_modified(self, view):
+		self._mod_view = view
+		self._mod_ev.set()
+
+	def view_pos_changed(self, view):
+		self._pos_view = view
+		self._mod_ev.set()
+
+	def _send_mod(self):
+		mod_v, self._mod_view = self._mod_view, None
+		pos_v, self._pos_view = self._pos_view, None
+		if mod_v is None and pos_v is None:
+			return
+
+		view = pos_v
+		action = actions.ViewPosChanged
+		if mod_v is not None:
+			action = actions.ViewModified
+			view = mod_v
+
+		self.send(action=action, view=view).wait()
+
+	def _handle_send_mod(self):
+		delay = 0.500
+		while not self.stopped.is_set():
+			self._mod_ev.wait(delay)
+			if self._mod_ev.is_set():
+				self._mod_ev.clear()
+				time.sleep(delay * 1.5)
+				self._send_mod()
 
 	def _handle_send(self):
 		for rq in self.req_chan:
@@ -168,9 +213,8 @@ class MargoAgent(threading.Thread):
 			return self._nop_handler
 
 		with self.lock:
-			if rs.cookie in self.req_handlers:
-				rq = self.req_handlers[rs.cookie]
-				del self.req_handlers[rs.cookie]
+			rq = self.req_handlers.pop(rs.cookie, None)
+			if rq:
 				rs.set_rq(rq)
 				return rq.done
 
@@ -188,7 +232,7 @@ class MargoAgent(threading.Thread):
 
 	def _handle_recv_ipc(self, v):
 		self._notify_ready()
-		rs = AgentRes(v=v)
+		rs = AgentRes(v=v, agent=self)
 		# call the handler first. it might be on a timeout (like fmt)
 		for handle in [self._handler(rs), self.mg.render]:
 			try:
@@ -231,12 +275,13 @@ class MargoAgent(threading.Thread):
 		return ln.rstrip('\r\n')
 
 class AgentRes(object):
-	def __init__(self, v={}, error='', timedout=0, rq=None):
+	def __init__(self, v={}, error='', timedout=0, rq=None, agent=None):
 		self.data = v
 		self.cookie = v.get('Cookie')
 		self.state = State(v=v.get('State') or {})
 		self.error = v.get('Error') or error
 		self.timedout = timedout
+		self.agent = agent
 		self.set_rq(rq)
 
 	def set_rq(self, rq):
@@ -253,7 +298,8 @@ class AgentRes(object):
 class AgentReq(object):
 	def __init__(self, agent, action, cb=None, view=None):
 		self.start_time = time.time()
-		_, self.cookie = agent.cookies.next()
+		_, cookie = agent.cookies.next()
+		self.cookie = 'action:%s(%s)' % (action['Name'], cookie)
 		self.domain = self.cookie
 		self.action = action
 		self.cb = cb

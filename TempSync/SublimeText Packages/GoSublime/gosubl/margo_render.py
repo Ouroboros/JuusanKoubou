@@ -1,3 +1,4 @@
+from . import _dbg
 from . import gs
 from . import gspatch
 from .margo_state import view_name, view_path
@@ -10,9 +11,6 @@ STATUS_SEP = ' •• '
 
 def render(view, state, status=[]):
 	sublime.set_timeout_async(lambda: _render(view, state, status), 0)
-	status_text = (STATUS_PFX +(
-			STATUS_SEP.join(status)
-		) + STATUS_SFX)
 
 def _render(view, state, status):
 	_render_status(view, status + state.status)
@@ -27,14 +25,14 @@ def _render_status(view, status):
 		status_text = ''
 
 	for w in sublime.windows():
-		for v in w.views():
+		for v in (w.views() or [w.active_view()]):
 			v.set_status(STATUS_KEY, status_text)
 
 def render_src(view, edit, src):
 	_, err = gspatch.merge(view, view.size(), src, edit)
 	if err:
 		msg = 'PANIC: Cannot fmt file. Check your source for errors (and maybe undo any changes).'
-		sublime.error_message("%s: %s: Merge failure: `%s'" % (domain, msg, err))
+		sublime.error_message("margo.render %s: Merge failure: `%s'" % (msg, err))
 
 
 class IssueCfg(object):

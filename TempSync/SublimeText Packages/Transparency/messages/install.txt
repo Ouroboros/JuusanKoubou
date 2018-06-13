@@ -5,39 +5,48 @@ Overview
 --------
 This simple plugin for Sublime Text 2 and Sublime Text 3 provides contextual menues to modify the application's opacity.
 
-This is only for Windows Operating System.
+**This is only for Windows Operating System.**
 
-
-Install
--------
-You may install `SublimeTextTrans` via git with the below commands:
-
-*Windows*
-
-    `git clone git://github.com/vhanla/SublimeTextTrans.git "%APPDATA%\Sublime Text 2\Packages\SublimeTextTrans"`
-
-Or download directly from here
-http://dl.dropbox.com/u/9084974/SublimeText2Plugins/SublimeTextTrans.sublime-package
-(it is a zip file with extension renamed)
 
 Usage:
 -------
-You can either use the Preferences>Opacity submenu to set the opacity or
-you can use the hotkeys Ctrl+Shift+[1,2,3,4,5,6]
+There are three methods to set transparency:
 
-![Snapshot](http://dl.dropbox.com/u/9084974/SublimeText2Plugins/SublimeTextTrans.jpg "Snapshot")
+1. Visit `View > Window's Transparency` submenu to set the opacity
+2. You can use the hotkeys `Ctrl+Shift+[1,2,3,4,5,6]`
+3. Or you can right click and use the contextual menu
 
-Changelog:
-----------
-- 12-06-2013
-
- - Added support for Sublime Text 3
 
 Configuration:
 --------------
-You can edit SublimeTextTrans.sublime-settings file in order to have your custom levels of opacity and if needed enable or disable the auto opacity.
+To set custom transparency levels visit `Preferences > Package Settings > SublimeTextTrans > Settings - User`, it will open the user's custom preferences file for this plugin.
 
-Author & Contributors
-----------------------
-[Victor Alberto Gil](http://profiles.google.com/vhanla) - Hope you like my work.
+There you can modify the transparency levels, by adding the following and adjusting the levels as you wish:
 
+{
+
+	// If you like to have a different transparency level
+	// modify this array of options in your user preferences
+	// i.e. just add (copy/paste) this array and modify at wish
+	// IMPORTANT: Level of opacity varies from 0 to 255
+	// 0 = Totally transparent, 255 = Fully opaque
+	// ORDER is important, it has its correspondent menu item/hotkey
+	"levels": [
+		255, // Full opaque i.e not transparent - a.k.a Disabled, recommended to leave it as 255 [Ctrl+Shift+1]
+		212, // Level 5 - [Ctrl+Shift+6]
+		220, // Level 4 - [Ctrl+Shift+5]
+		228, // Level 3 - [Ctrl+Shift+4]
+		236, // Level 2 - [Ctrl+Shift+3]
+		243  // Level 1 - [Ctrl+Shift+2]
+	]
+}
+
+You can enable or disable autoapply transparency on ST load automatically by adding to the user settings:
+{
+	"autoapply": true // false to disable
+}
+
+Or just open default settings, copy it and paste it in your user settings, modifiy as you wish and save your new settings.
+
+
+Report issues at: https://github.com/vhanla/SublimeTextTrans/issues

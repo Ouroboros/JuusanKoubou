@@ -35,6 +35,10 @@ def loadable_mods():
 	]
 
 def plugin_loaded():
+	from threading import Thread
+	Thread(target=_plugin_loaded_async).start()
+
+def _plugin_loaded_async():
 	from .gosubl import about
 	from .gosubl import sh
 	from .gosubl import ev

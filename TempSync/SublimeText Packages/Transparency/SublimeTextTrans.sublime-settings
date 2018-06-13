@@ -1,19 +1,33 @@
-{	
+// SublimeTextTrans default settings
+//
+// In order to tweak the settings, you should NOT edit this file, but instead
+// the user-specific, empty-by-default version under:
+// "Preferences / Package Settings / SublimeTextTrans / Settings - User".
+//
+// See SublimeTextTrans' README for more information.
+{
 
-	// Level of opacity varies from 0 to 255 
-
-	// Auto apply on file open 
+	// Auto apply on file open
 	"autoapply": true,
-	
-	// Default opacity level for auto apply
+
+	// Don't modify this value, it will be updated automatically
+	// it's meant to be used as the level to remember on startup
 	"opacity": 228,
-	
+
 	// It will set the default levels of opacity
-	
-	"level0": 255,
-	"level1": 212,
-	"level2": 220,
-	"level3": 228,
-	"level4": 236,
-	"level5": 243
+
+	// If you like to have a different transparency level
+	// modify this array of options in your user preferences
+	// i.e. just add (copy/paste) this array and modify at wish
+	// IMPORTANT: Level of opacity varies from 0 to 255
+	// 0 = Totally transparent, 255 = Fully opaque
+	// ORDER is important, it has its correspondent menu item/hotkey
+	"levels": [
+		255, // Full opaque i.e not transparent - a.k.a Disabled, recommended to leave it as 255 [Ctrl+Shift+1]
+		212, // Level 5 - [Ctrl+Shift+6]
+		220, // Level 4 - [Ctrl+Shift+5]
+		228, // Level 3 - [Ctrl+Shift+4]
+		236, // Level 2 - [Ctrl+Shift+3]
+		243  // Level 1 - [Ctrl+Shift+2]
+	]
 }

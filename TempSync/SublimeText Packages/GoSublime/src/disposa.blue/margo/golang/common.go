@@ -4,10 +4,10 @@ import (
 	"disposa.blue/margo/mg"
 	"go/ast"
 	"go/build"
-	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"unicode"
@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	CommonPatterns = append(mg.CommonPatterns[:len(mg.CommonPatterns):len(mg.CommonPatterns)],
+	CommonPatterns = append([]*regexp.Regexp{
+		regexp.MustCompile(`^\s*(?P<path>.+?\.\w+):(?P<line>\d+:)(?P<column>\d+:?)?(?:(?P<tag>warning|error)[:])?(?P<message>.+?)(?: [(](?P<label>[-\w]+)[)])?$`),
 		regexp.MustCompile(`(?P<message>can't load package: package .+: found packages .+ \((?P<path>.+?\.go)\).+)`),
-	)
+	}, mg.CommonPatterns...)
 )
 
 func BuildContext(mx *mg.Ctx) *build.Context {
@@ -53,6 +54,10 @@ func NodeEnclosesPos(node ast.Node, pos token.Pos) bool {
 	if node == nil {
 		return false
 	}
+	// apparently node can be (*T)(nil)
+	if reflect.ValueOf(node).IsNil() {
+		return false
+	}
 	if np := node.Pos(); !np.IsValid() || pos <= np {
 		return false
 	}
@@ -65,73 +70,86 @@ func NodeEnclosesPos(node ast.Node, pos token.Pos) bool {
 }
 
 type CursorNode struct {
-	Fset *token.FileSet
-
 	Pos       token.Pos
 	AstFile   *ast.File
 	TokenFile *token.File
 
+	GenDecl    *ast.GenDecl
 	ImportSpec *ast.ImportSpec
 	Comment    *ast.Comment
 	BlockStmt  *ast.BlockStmt
 	CallExpr   *ast.CallExpr
 	BasicLit   *ast.BasicLit
+	Nodes      []ast.Node
 	Node       ast.Node
 }
 
 func (cn *CursorNode) ScanFile(af *ast.File) {
+	pos := af.Package
+	end := pos + token.Pos(len("package"))
+	if af.Name != nil {
+		end = pos + token.Pos(af.Name.End())
+	}
+	if cn.Pos >= pos && cn.Pos <= end {
+		return
+	}
+
+	cn.Append(af)
 	ast.Walk(cn, af)
 	for _, cg := range af.Comments {
 		for _, c := range cg.List {
 			if NodeEnclosesPos(c, cn.Pos) {
-				cn.Comment = c
-				cn.Node = c
+				cn.Append(c)
 			}
 		}
 	}
+	cn.Node = cn.Nodes[len(cn.Nodes)-1]
+	cn.Set(&cn.GenDecl)
+	cn.Set(&cn.BlockStmt)
+	cn.Set(&cn.BasicLit)
+	cn.Set(&cn.CallExpr)
+	cn.Set(&cn.Comment)
+	cn.Set(&cn.ImportSpec)
 }
 
 func (cn *CursorNode) Visit(node ast.Node) ast.Visitor {
-	if node == nil {
-		return cn
-	}
-	// if we're inside e.g. an unclosed string, the end will be invalid
-	if !NodeEnclosesPos(node, cn.Pos) {
-		return cn
-	}
-
-	cn.Node = node
-	switch x := node.(type) {
-	case *ast.BlockStmt:
-		cn.BlockStmt = x
-	case *ast.BasicLit:
-		cn.BasicLit = x
-	case *ast.CallExpr:
-		cn.CallExpr = x
-	case *ast.Comment:
-		// comments that appear here are only those that are attached to something else
-		// we will traverse *all* comments after .Walk()
-	case *ast.ImportSpec:
-		cn.ImportSpec = x
+	if NodeEnclosesPos(node, cn.Pos) {
+		cn.Append(node)
 	}
 	return cn
 }
 
-func ParseCursorNode(src []byte, offset int) *CursorNode {
-	cn := &CursorNode{Fset: token.NewFileSet()}
-
-	// TODO: caching
-	cn.AstFile, _ = parser.ParseFile(cn.Fset, "_.go", src, parser.ParseComments)
-	if cn.AstFile == nil {
-		return cn
+func (cn *CursorNode) Append(n ast.Node) {
+	for _, x := range cn.Nodes {
+		if n == x {
+			return
+		}
 	}
+	cn.Nodes = append(cn.Nodes, n)
+}
 
-	cn.TokenFile = cn.Fset.File(cn.AstFile.Pos())
-	if cn.TokenFile == nil {
-		return cn
+func (cn *CursorNode) Set(destPtr interface{}) bool {
+	v := reflect.ValueOf(destPtr).Elem()
+	if !v.CanSet() {
+		return false
 	}
+	for i := len(cn.Nodes) - 1; i >= 0; i-- {
+		x := reflect.ValueOf(cn.Nodes[i])
+		if x.Type() == v.Type() {
+			v.Set(x)
+			return true
+		}
+	}
+	return false
+}
 
-	cn.Pos = cn.TokenFile.Pos(offset)
+func ParseCursorNode(kvs mg.KVStore, src []byte, offset int) *CursorNode {
+	pf := ParseFile(kvs, "", src)
+	cn := &CursorNode{
+		AstFile:   pf.AstFile,
+		TokenFile: pf.TokenFile,
+		Pos:       token.Pos(pf.TokenFile.Base() + offset),
+	}
 	cn.ScanFile(cn.AstFile)
 	return cn
 }

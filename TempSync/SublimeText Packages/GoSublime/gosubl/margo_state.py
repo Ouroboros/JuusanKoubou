@@ -1,3 +1,4 @@
+from . import _dbg
 from . import gs, sh
 from .margo_common import NS
 import os
@@ -12,6 +13,7 @@ actions = NS(**{k: {'Name': k} for k in (
 	'ViewModified',
 	'ViewPosChanged',
 	'ViewFmt',
+	'ViewPreSave',
 	'ViewSaved',
 	'ViewLoaded',
 	'ViewClosed',
@@ -20,7 +22,7 @@ actions = NS(**{k: {'Name': k} for k in (
 class Config(object):
 	def __init__(self, m):
 		self.override_settings = m.get('OverrideSettings') or {}
-		self.trigger_events = m.get('Enabled') is True
+		self.enabled_for_langs = m.get('EnabledForLangs') or []
 		self.inhibit_explicit_completions = m.get('InhibitExplicitCompletions') is True
 		self.inhibit_word_completions = m.get('InhibitWordCompletions') is True
 		self.auto_complete_opts = 0
@@ -36,14 +38,18 @@ class State(object):
 	def __init__(self, v={}):
 		self.config = Config(v.get('Config') or {})
 		self.status = v.get('Status') or []
-		self.view = v.get('View') or {}
-		self.obsolete = v.get('Obsolete') is True
+		self.view = ResView(v=v.get('View') or {})
+		self.client_actions = [ClientAction(v=a) for a in (v.get('ClientActions') or [])]
 		self.completions = [Completion(c) for c in (v.get('Completions') or [])]
 		self.tooltips = [Tooltip(t) for t in (v.get('Tooltips') or [])]
 		self.issues = [Issue(l) for l in (v.get('Issues') or [])]
 
 	def __repr__(self):
 		return repr(self.__dict__)
+
+class ClientAction(object):
+	def __init__(self, v={}):
+		self.name = v.get('Name') or ''
 
 class Completion(object):
 	def __init__(self, v):
@@ -92,6 +98,12 @@ class Issue(object):
 
 		return os.path.relpath(self.path, dir)
 
+class ResView(object):
+	def __init__(self, v={}):
+		self.name = v.get('Name') or ''
+		self.src = v.get('Src') or ''
+		if isinstance(self.src, bytes):
+			self.src = self.src.decode('utf-8')
 
 # in testing, we should be able to push 50MiB+ files constantly without noticing a performance problem
 # but keep this number low (realistic source files sizes) at least until we optimize things
@@ -105,15 +117,23 @@ MAX_VIEW_SIZE = 512 << 10
 #       and then we have to re-encode that into bytes to send it
 def make_props(view=None):
 	props = {
-		'Editor': {
-			'Name': 'sublime',
-			'Version': sublime.version(),
-		},
+		'Editor': _editor_props(view),
 		'Env': sh.env(),
 		'View': _view_props(view),
 	}
 
 	return props
+
+def _editor_props(view):
+	sett = gs.setting('margo') or {}
+	if view is not None:
+		sett.update(view.settings().get('margo') or {})
+
+	return {
+		'Name': 'sublime',
+		'Version': sublime.version(),
+		'Settings': sett,
+	}
 
 def _view_props(view):
 	view = gs.active_view(view=view)

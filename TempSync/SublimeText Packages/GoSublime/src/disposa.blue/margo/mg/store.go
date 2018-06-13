@@ -11,27 +11,66 @@ type Dispatcher func(Action)
 
 type Listener func(*State)
 
+type storeReducers struct {
+	before ReducerList
+	use    ReducerList
+	after  ReducerList
+}
+
+func (sr storeReducers) Reduce(mx *Ctx) *State {
+	mx = sr.before.ReduceCtx(mx)
+	mx = sr.use.ReduceCtx(mx)
+	mx = sr.after.ReduceCtx(mx)
+	return mx.State
+}
+
+func (sr storeReducers) Copy(updaters ...func(*storeReducers)) storeReducers {
+	for _, f := range updaters {
+		f(&sr)
+	}
+	return sr
+}
+
 type Store struct {
 	mu        sync.Mutex
+	readyCh   chan struct{}
 	state     *State
 	listeners []*struct{ Listener }
 	listener  Listener
-	before    []Reducer
-	use       []Reducer
-	after     []Reducer
-	cfg       func() EditorConfig
-	ag        *Agent
+	reducers  struct {
+		sync.Mutex
+		storeReducers
+	}
+	cfg   EditorConfig
+	ag    *Agent
+	tasks *taskTracker
+	cache struct {
+		sync.RWMutex
+		vName string
+		vHash string
+		m     map[interface{}]interface{}
+	}
+}
+
+func (sto *Store) ready() {
+	close(sto.readyCh)
 }
 
 func (sto *Store) Dispatch(act Action) {
-	go sto.dispatch(act)
+	go func() {
+		<-sto.readyCh
+		sto.dispatch(act)
+	}()
 }
 
 func (sto *Store) dispatch(act Action) {
 	sto.mu.Lock()
 	defer sto.mu.Unlock()
 
-	sto.reduce(newCtx(sto.ag, sto.prepState(sto.state), act, sto), true)
+	mx, done := newCtx(sto.ag, sto.prepState(sto.state), act, sto)
+	defer close(done)
+	st := sto.reducers.Reduce(mx)
+	sto.updateState(st, true)
 }
 
 func (sto *Store) syncRq(ag *Agent, rq *agentReq) {
@@ -39,7 +78,8 @@ func (sto *Store) syncRq(ag *Agent, rq *agentReq) {
 	defer sto.mu.Unlock()
 
 	name := rq.Action.Name
-	mx := newCtx(sto.ag, sto.state, ag.createAction(name), sto)
+	mx, done := newCtx(sto.ag, sto.state, ag.createAction(name), sto)
+	defer close(done)
 
 	rs := agentRes{Cookie: rq.Cookie}
 	rs.State = mx.State
@@ -53,33 +93,21 @@ func (sto *Store) syncRq(ag *Agent, rq *agentReq) {
 	// TODO: add support for unpacking Action.Data
 
 	mx = rq.Props.updateCtx(mx)
+	sto.initCache(mx.View)
 	mx.State = sto.prepState(mx.State)
-	rs.State = sto.reduce(mx, false)
+	st := sto.reducers.Reduce(mx)
+	rs.State = sto.updateState(st, false)
 }
 
-func (sto *Store) reduce(mx *Ctx, callListener bool) *State {
-	apply := func(rl []Reducer) {
-		for _, r := range rl {
-			mx = mx.Copy(func(mx *Ctx) {
-				mx.State = r.Reduce(mx)
-			})
-		}
-	}
-	apply(sto.before)
-	apply(sto.use)
-	apply(sto.after)
-
+func (sto *Store) updateState(st *State, callListener bool) *State {
 	if callListener && sto.listener != nil {
-		sto.listener(mx.State)
+		sto.listener(st)
 	}
-
 	for _, p := range sto.listeners {
-		p.Listener(mx.State)
+		p.Listener(st)
 	}
-
-	sto.state = mx.State
-
-	return mx.State
+	sto.state = st
+	return st
 }
 
 func (sto *Store) State() *State {
@@ -93,17 +121,22 @@ func (sto *Store) prepState(st *State) *State {
 	st = st.Copy()
 	st.EphemeralState = EphemeralState{}
 	if sto.cfg != nil {
-		st.Config = sto.cfg()
+		st.Config = sto.cfg
 	}
 	return st
 }
 
 func newStore(ag *Agent, l Listener) *Store {
-	return &Store{
+	sto := &Store{
+		readyCh:  make(chan struct{}),
 		listener: l,
 		state:    NewState(),
 		ag:       ag,
 	}
+	sto.cache.m = map[interface{}]interface{}{}
+	sto.tasks = newTaskTracker(sto.Dispatch)
+	sto.After(sto.tasks)
+	return sto
 }
 
 func (sto *Store) Subscribe(l Listener) (unsubscribe func()) {
@@ -127,31 +160,75 @@ func (sto *Store) Subscribe(l Listener) (unsubscribe func()) {
 	}
 }
 
+func (sto *Store) updateReducers(updaters ...func(*storeReducers)) *Store {
+	sto.reducers.Lock()
+	defer sto.reducers.Unlock()
+
+	sto.reducers.storeReducers = sto.reducers.Copy(updaters...)
+	return sto
+}
+
 func (sto *Store) Before(reducers ...Reducer) *Store {
-	return sto.useReducers(&sto.before, reducers)
+	return sto.updateReducers(func(sr *storeReducers) {
+		sr.before = sr.before.Add(reducers...)
+	})
 }
 
 func (sto *Store) Use(reducers ...Reducer) *Store {
-	return sto.useReducers(&sto.use, reducers)
+	return sto.updateReducers(func(sr *storeReducers) {
+		sr.use = sr.use.Add(reducers...)
+	})
 }
 
 func (sto *Store) After(reducers ...Reducer) *Store {
-	return sto.useReducers(&sto.after, reducers)
+	return sto.updateReducers(func(sr *storeReducers) {
+		sr.after = sr.after.Add(reducers...)
+	})
 }
 
-func (sto *Store) useReducers(p *[]Reducer, reducers []Reducer) *Store {
+func (sto *Store) EditorConfig(cfg EditorConfig) *Store {
 	sto.mu.Lock()
 	defer sto.mu.Unlock()
 
-	l := *p
-	*p = append(l[:len(l):len(l)], reducers...)
+	sto.cfg = cfg
 	return sto
 }
 
-func (sto *Store) EditorConfig(f func() EditorConfig) *Store {
-	sto.mu.Lock()
-	defer sto.mu.Unlock()
+func (sto *Store) Begin(t Task) *TaskTicket {
+	return sto.tasks.Begin(t)
+}
 
-	sto.cfg = f
-	return sto
+func (sto *Store) initCache(v *View) {
+	cc := &sto.cache
+	cc.Lock()
+	defer cc.Unlock()
+
+	if cc.vHash == v.Hash && cc.vName == v.Name {
+		return
+	}
+
+	cc.m = map[interface{}]interface{}{}
+	cc.vHash = v.Hash
+	cc.vName = v.Name
+}
+
+func (sto *Store) Put(k interface{}, v interface{}) {
+	sto.cache.Lock()
+	defer sto.cache.Unlock()
+
+	sto.cache.m[k] = v
+}
+
+func (sto *Store) Get(k interface{}) interface{} {
+	sto.cache.RLock()
+	defer sto.cache.RUnlock()
+
+	return sto.cache.m[k]
+}
+
+func (sto *Store) Del(k interface{}) {
+	sto.cache.Lock()
+	defer sto.cache.Unlock()
+
+	delete(sto.cache.m, k)
 }

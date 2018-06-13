@@ -1,8 +1,9 @@
-from . import gs, gsq
+from . import _dbg
+from . import gs, gsq, sh
 from .margo_agent import MargoAgent
-from .margo_common import OutputLogger, TokenCounter, Debounce
+from .margo_common import OutputLogger, TokenCounter
 from .margo_render import render, render_src
-from .margo_state import State, actions, Config
+from .margo_state import State, actions, Config, _view_scope_lang
 from collections import namedtuple
 import glob
 import os
@@ -15,9 +16,7 @@ class MargoSingleton(object):
 		self.out = OutputLogger('margo')
 		self.agent_tokens = TokenCounter('agent', format='{}#{:03d}', start=6)
 		self.agent = None
-		self.on_modified = Debounce(self._on_modified, 1.000)
-		self.on_selection_modified = Debounce(self._on_selection_modified, 0.500)
-		self._trigger_events = False
+		self.enabled_for_langs = []
 		self.state = State()
 		self.status = []
 
@@ -26,17 +25,26 @@ class MargoSingleton(object):
 			self.state = rs.state
 			cfg = rs.state.config
 
-			if cfg.trigger_events:
-				self._trigger_events = True
+			self.enabled_for_langs = cfg.enabled_for_langs
 
 			if cfg.override_settings:
 				gs._mg_override_settings = cfg.override_settings
 
-			if rs.state.obsolete:
-				self.out.println('restarting: agent is obsolete')
-				self.restart()
+		render(view=gs.active_view(), state=self.state, status=self.status)
 
-		sublime.set_timeout(lambda: render(view=gs.active_view(), state=self.state, status=self.status), 0)
+		if rs:
+			if rs.agent is self.agent:
+				sublime.set_timeout_async(lambda: self._handle_client_actions(rs.state.client_actions), 0)
+
+			if rs.agent and rs.agent is not self.agent:
+				rs.agent.stop()
+
+	def _handle_client_actions(self, client_actions):
+		for a in client_actions:
+			if a.name == 'restart':
+				self.restart()
+			elif a.name == 'shutdown':
+				self.stop()
 
 	def render_status(self, *a):
 		self.status = list(a)
@@ -62,10 +70,14 @@ class MargoSingleton(object):
 			a.stop()
 
 	def enabled(self, view):
-		return self._trigger_events
+		if '*' in self.enabled_for_langs:
+			return True
+
+		_, lang = _view_scope_lang(view, 0)
+		return lang in self.enabled_for_langs
 
 	def can_trigger_event(self, view, allow_9o=False):
-		if not self._trigger_events:
+		if not self.enabled(view):
 			return False
 
 		if view is None:
@@ -116,10 +128,12 @@ class MargoSingleton(object):
 		self.agent = None
 		self.clear_status()
 
-	def send(self, action={}, cb=None, view=None):
+	def _send_start(self):
 		if not self.agent:
 			self.start()
 
+	def send(self, action={}, cb=None, view=None):
+		self._send_start()
 		return self.agent.send(action=action, cb=cb, view=view)
 
 	def on_query_completions(self, view, prefix, locations):
@@ -140,28 +154,36 @@ class MargoSingleton(object):
 	def on_activated(self, view):
 		self.send(view=view, action=actions.ViewActivated)
 
-	def _on_modified(self, view):
-		self.send(view=view, action=actions.ViewModified)
+	def on_modified(self, view):
+		self._send_start()
+		self.agent.view_modified(view)
 
-	def _on_selection_modified(self, view):
-		self.send(view=view, action=actions.ViewPosChanged)
+	def on_selection_modified(self, view):
+		self._send_start()
+		self.agent.view_pos_changed(view)
 
 	def fmt(self, view):
+		return self._fmt_save(view=view, action=actions.ViewFmt, name='fmt', timeout=5.000)
+
+	def on_pre_save(self, view):
+		return self._fmt_save(view=view, action=actions.ViewPreSave, name='pre-save', timeout=2.000)
+
+	def _fmt_save(self, *, view, action, name, timeout):
 		id_nm = '%d: %s' % (view.id(), view.file_name() or view.name())
-		rq = self.send(view=view, action=actions.ViewFmt)
-		rs = rq.wait(1.000)
+		rq = self.send(view=view, action=action)
+		rs = rq.wait(timeout)
 		if not rs:
-			self.out.println('fmt timedout on view %s' % id_nm)
+			self.out.println('%s timedout on view %s' % (name, id_nm))
 			return
 
 		if rs.error:
-			self.out.println('fmt error in view %s: %s' % (id_nm, rs.error))
+			self.out.println('%s error in view %s: %s' % (name, id_nm, rs.error))
 			return
 
 		req = rq.props.get('View', {})
 		res = rs.state.view
 		req_name, req_src = req.get('Name'), req.get('Src')
-		res_name, res_src = res.get('Name'), res.get('Src')
+		res_name, res_src = res.name, res.src
 
 		if not res_name or not res_src:
 			return
@@ -176,9 +198,6 @@ class MargoSingleton(object):
 			return
 
 		view.run_command('margo_render_src', {'src': res_src})
-
-	def on_pre_save(self, view):
-		self.fmt(view)
 
 	def on_post_save(self, view):
 		self.send(view=view, action=actions.ViewSaved)

@@ -4,7 +4,117 @@ If you find GoSublime useful and would like to support me and future development
 please donate via one of the available methods on https://github.com/DisposaBoy/GoSublime#donations
 
 
+**margo:**
+
+The new version of margo is close to being ready for real usage.
+If you'd like to test it out, press `ctrl+.`,`ctrl+x` or `cmd+.`,`cmd+x`
+to open the extension file and then save it and restart sublime text.
+
+Please make sure to read all the comments, as enabling it will affect GoSublime features.
+
 **Changes:**
+
+## 18.05.19
+	* Improve ligature support in the `GoSublime: Go` syntax
+
+## 18.04.30-1
+	* fix margo build failure in some cases when the go compiler is up/down-graded
+
+## 18.04.19-1
+	* fix margo build failure when `use_gs_gopath` is enabled
+
+## 18.03.26-1
+	* update gocode
+	* fix gocode completion showing duplicate function parameter names
+	* add support for restricting the files in which events are triggered
+	* (hopefully) fix an issue where some users were experiencing laggy input
+
+## 18.03.23-1
+	* GOPATH is automatically set to the internal GOPATH when editing margo source files
+	  this allows for things like linters and gocode to work when editing `margo.go`
+
+	* margo is now only automatically restarted if `go test` succeeds
+	  this further supports linters by not restarting when `margo.go` compilation fails
+
+	* add a default linter pattern for gometalinter
+	  the following reducer/linter should now work without any additional setup
+
+	  ```
+		&golang.Linter{Name: "gometalinter", Args: []string{"--fast"}},
+
+	  ```
+
+	* add support for sending settings to margo
+	  in the GoSublime settings, Sublime Text preferences or project settings
+	  the entry `"margo": {...}` will be send to margo where reducers can make use of it
+	  by accessing `mx.Editor.Settings` e.g.
+
+	  gosublime settings:
+	  ```
+		"margo": {
+			"message": "hello world from the GoSublime settings",
+		}
+	  ```
+
+	  project settings:
+	  ```
+		"margo": {
+			"message": "hello world from the project settings",
+		}
+	  ```
+
+	  margo.go
+	  ```
+		mg.Reduce(func(mx *mg.Ctx) *mg.State {
+			var settings struct {
+				// due to limitations in the codec pkg we need to add struct tags
+				// unless we use the exact (capitalized name) in the editor settings
+				Status string `codec:"status"`
+			}
+			err := mx.Editor.Settings(&settings)
+			switch err {
+			case mg.ErrNoSettings:
+				// when the `Started` action is dispatched, no client data is present
+				// and we therefore have no settings
+				return mx.State
+			case nil:
+				return mx.AddStatus(settings.Status)
+			default:
+				return mx.AddStatusf("cannot decode settings: %v", err)
+			}
+		}),
+	  ```
+## 18.03.21-1
+	* fix exception due to missing import?
+
+## 18.03.20-1
+	* fix a case where (old) margo compilation fails because the Go version cannot
+	  be determined, but the sanity check shows the correct version
+	* move some initializations off the ui thread to avoid ui freezes on startup
+	* fix the `golang.GoInstallDiscardBinaries` linter failing due to invalid dirname
+
+## 18.03.19-1
+	* disable the `autoinst` setting by default
+	* fix a Python buffering issue that sometimes caused the ui to freeze
+	* speedup sh-bootstrap/Sublime Text startup
+
+## 18.03.16-1
+	* support for context-aware snippets have now been added in the new version of margo.
+	  just add `golang.Snippets,` to your reducers to enable it.
+
+	  see https://github.com/disposablue/margo/blob/master/extension-example/extension-example.go
+
+## 18.03.05-1
+	* if no status is set, the status markers (dots) are no longer shown
+	* sh-bootstrap.go is now built with `go build` to improve startup time in go1.10
+	* path handling on Windows was improved
+	* linter support should now be almost complete.
+	  * add support for displaying issues via `ctrl+.`,`ctrl+e` or `cmd+.`,`cmd+e`
+	  * errors for all files in the package are tracked
+	  * the error count in the status bar is always visible if there are errors in other files
+
+	  see the example extension https://github.com/disposablue/margo/blob/master/extension-example/extension-example.go for examples of builtin linters.
+
 
 ## 18.02.17-2
 	* stop linking sqlite3 to avoid cgo-related compilation errors
