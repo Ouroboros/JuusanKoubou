@@ -29,7 +29,8 @@
     "window.zoomLevel": 0,
 
     "files.associations": {
-        "*.xm": "objective-cpp"
+        "*.xm": "objective-cpp",
+        "*.plist": "xml"
     },
 
     "go.buildOnSave": "off",
