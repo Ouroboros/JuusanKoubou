@@ -55,16 +55,13 @@ def _binning(values, limits=(0, 0), bin_num=10):
     bins = [0] * (bin_num)
 
     # will ignore these outliers for now
-    out_points = 0
     for value in values:
         try:
-            if (value - min_val) < 0:
-                out_points += 1
-            else:
+            if (value - min_val) >= 0:
                 index = int((value - min_val)/float(bin_size))
                 bins[index] += 1
         except IndexError:
-            out_points += 1
+            pass
 
     # make it ready for an x,y plot
     result = []

@@ -131,3 +131,5 @@ Source/LocaleEmulator/LocaleEmulator/LoaderDll.dll
 /Source/Hooks/FinalFantasyIII/Release
 /Source/Hooks/FinalFantasyIII/*.opendb
 _ReSharper.Caches/
+/Source/Project/IPAObfuscator
+/Source/Project/byte-dance
