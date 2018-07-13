@@ -1,12 +1,8 @@
 // Place your settings in this file to overwrite the default settings
 {
-    "materialTheme.cache.workbench.settings": {
-        "themeColours": "Darker High Contrast"
-    },
-
     "workbench.startupEditor": "newUntitledFile",
-    "workbench.colorTheme": "Material Theme",
-    "workbench.iconTheme": "eq-material-theme-icons",
+    "workbench.colorTheme": "Material Theme Darker High Contrast",
+    "workbench.iconTheme": "eq-material-theme-icons-darker",
     "workbench.colorCustomizations": {
         "tab.inactiveForeground": "#8A8A8A",
         "editorLineNumber.foreground": "#828282"
@@ -29,8 +25,7 @@
     "window.zoomLevel": 0,
 
     "files.associations": {
-        "*.xm": "objective-cpp",
-        "*.plist": "xml"
+        "*.xm": "objective-cpp"
     },
 
     "go.buildOnSave": "off",
@@ -77,5 +72,5 @@
     "git.path": "D:/Dev/PortableGit/bin/git.exe",
     "git.ignoreMissingGitWarning": true,
     "explorer.confirmDelete": false,
-    "[objective-cpp]": {}
+    "materialTheme.fixIconsRunning": false
 }
