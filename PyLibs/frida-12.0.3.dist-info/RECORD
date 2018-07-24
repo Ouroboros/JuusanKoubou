@@ -1,0 +1,13 @@
+_frida.cp36-win_amd64.pyd,sha256=Oxm60EqFLz19qOl5pVQXBOq8WWO9qBpYwDTfo5X_O98,40127488
+frida/__init__.py,sha256=eFdlhnMNVDUYd6BqNg8jzYzeTUYgRGDA1okqWqXNZz8,3718
+frida/core.py,sha256=1rtD_hcrZb0yiKc0C-LE-RHsI8rwS8G_TfQCnudv6_c,9773
+frida-12.0.3.dist-info/DESCRIPTION.rst,sha256=OCTuuN6LcWulhHS3d5rfjdsQtW22n7HENFRh6jC6ego,10
+frida-12.0.3.dist-info/METADATA,sha256=ib11BNNDKadOOb-hvGCvX6QiRL2-PVzP6DeJx8AzyIE,1464
+frida-12.0.3.dist-info/RECORD,,
+frida-12.0.3.dist-info/WHEEL,sha256=3o6dJ54ci-MtRFdJCPkLCK5G-vO7QSv3lIQ-NrhglGk,106
+frida-12.0.3.dist-info/metadata.json,sha256=cITIRdR2S3I-BEScjst7qXyswPVLjl1hQExLGv9tiAo,1514
+frida-12.0.3.dist-info/top_level.txt,sha256=hIYINaco86aRnPRwHl5W92UgO9zQ4IeFLomjDZRKcHo,13
+frida-12.0.3.dist-info/zip-safe,sha256=frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN_XKdLCPjaYaY,2
+frida-12.0.3.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+frida/__pycache__/core.cpython-36.pyc,,
+frida/__pycache__/__init__.cpython-36.pyc,,

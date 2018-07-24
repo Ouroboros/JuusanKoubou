@@ -1,3 +1,6 @@
+<a href="https://margo.sh/gosublime-future" target="_blank"><img src="https://margo.sh/gosublime/fight-the-future.png"></a>
+
+<br><br>
 
 
 [![Backers on Open Collective](https://opencollective.com/gosublime/backers/badge.svg)](#backers) [![Sponsors on Open Collective](https://opencollective.com/gosublime/sponsors/badge.svg)](#sponsors) [![Build Status](https://travis-ci.org/DisposaBoy/GoSublime.svg?branch=master)](https://travis-ci.org/DisposaBoy/GoSublime)
@@ -5,6 +8,8 @@
 
 GoSublime
 =========
+
+
 
 Intro
 -----
@@ -120,4 +125,7 @@ Support this project by becoming a sponsor. Your logo will show up here with a l
 <a href="https://opencollective.com/gosublime/sponsor/8/website" target="_blank"><img src="https://opencollective.com/gosublime/sponsor/8/avatar.svg"></a>
 <a href="https://opencollective.com/gosublime/sponsor/9/website" target="_blank"><img src="https://opencollective.com/gosublime/sponsor/9/avatar.svg"></a>
 
+
+<br>
+<a href="https://margo.sh/sponsors/0" target="_blank"><img src="https://margo.sh/sponsors/0.svg"></a>
 
