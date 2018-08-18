@@ -21,6 +21,9 @@
         "comments": "#8A8A8A"
     },
 
+    "breadcrumbs.enabled": true,
+    "window.titleBarStyle": "custom",
+
     "window.newWindowDimensions": "inherit",
     "window.zoomLevel": 0,
 
