@@ -24,6 +24,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='utf8')
 SITES = {
     '163'              : 'netease',
     '56'               : 'w56',
+    '365yg'            : 'toutiao',
     'acfun'            : 'acfun',
     'archive'          : 'archive',
     'baidu'            : 'baidu',
@@ -64,6 +65,7 @@ SITES = {
     'iqiyi'            : 'iqiyi',
     'ixigua'           : 'ixigua',
     'isuntv'           : 'suntv',
+    'iwara'            : 'iwara',
     'joy'              : 'joy',
     'kankanews'        : 'bilibili',
     'khanacademy'      : 'khan',
@@ -74,6 +76,7 @@ SITES = {
     'le'               : 'le',
     'letv'             : 'le',
     'lizhi'            : 'lizhi',
+    'longzhu'          : 'longzhu',
     'magisto'          : 'magisto',
     'metacafe'         : 'metacafe',
     'mgtv'             : 'mgtv',
@@ -81,6 +84,7 @@ SITES = {
     'mixcloud'         : 'mixcloud',
     'mtv81'            : 'mtv81',
     'musicplayon'      : 'musicplayon',
+    'miaopai'          : 'yixia',
     'naver'            : 'naver',
     '7gogo'            : 'nanagogo',
     'nicovideo'        : 'nicovideo',
@@ -117,14 +121,12 @@ SITES = {
     'xiaojiadianvideo' : 'fc2video',
     'ximalaya'         : 'ximalaya',
     'yinyuetai'        : 'yinyuetai',
-    'miaopai'          : 'yixia',
     'yizhibo'          : 'yizhibo',
     'youku'            : 'youku',
-    'iwara'            : 'iwara',
     'youtu'            : 'youtube',
     'youtube'          : 'youtube',
     'zhanqi'           : 'zhanqi',
-    '365yg'            : 'toutiao',
+    'zhibo'            : 'zhibo',
 }
 
 dry_run = False
@@ -134,13 +136,14 @@ player = None
 extractor_proxy = None
 cookies = None
 output_filename = None
+auto_rename = False
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',  # noqa
     'Accept-Charset': 'UTF-8,*;q=0.5',
     'Accept-Encoding': 'gzip,deflate,sdch',
     'Accept-Language': 'en-US,en;q=0.8',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:51.0) Gecko/20100101 Firefox/51.0',  # noqa
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:60.0) Gecko/20100101 Firefox/60.0',  # noqa
 }
 
 if sys.stdout.isatty():
@@ -366,13 +369,16 @@ def get_decoded_html(url, faker=False):
         return data
 
 
-def get_location(url):
+def get_location(url, headers=None, get_method='HEAD'):
     logging.debug('get_location: %s' % url)
 
-    response = request.urlopen(url)
-    # urllib will follow redirections and it's too much code to tell urllib
-    # not to do that
-    return response.geturl()
+    if headers:
+        req = request.Request(url, headers=headers)
+    else:
+        req = request.Request(url)
+    req.get_method = lambda: get_method
+    res = urlopen_with_retry(req)
+    return res.geturl()
 
 
 def urlopen_with_retry(*args, **kwargs):
@@ -493,7 +499,7 @@ def urls_size(urls, faker=False, headers={}):
     return sum([url_size(url, faker=faker, headers=headers) for url in urls])
 
 
-def get_head(url, headers={}, get_method='HEAD'):
+def get_head(url, headers=None, get_method='HEAD'):
     logging.debug('get_head: %s' % url)
 
     if headers:
@@ -502,7 +508,7 @@ def get_head(url, headers={}, get_method='HEAD'):
         req = request.Request(url)
     req.get_method = lambda: get_method
     res = urlopen_with_retry(req)
-    return dict(res.headers)
+    return res.headers
 
 
 def url_info(url, faker=False, headers={}):
@@ -598,27 +604,43 @@ def url_save(
         tmp_headers['Referer'] = refer
     file_size = url_size(url, faker=faker, headers=tmp_headers)
 
-    if os.path.exists(filepath):
-        if not force and file_size == os.path.getsize(filepath):
-            if not is_part:
-                if bar:
-                    bar.done()
-                print(
-                    'Skipping {}: file already exists'.format(
-                        tr(os.path.basename(filepath))
+    continue_renameing = True
+    while continue_renameing:
+        continue_renameing = False
+        if os.path.exists(filepath):
+            if not force and file_size == os.path.getsize(filepath):
+                if not is_part:
+                    if bar:
+                        bar.done()
+                    print(
+                        'Skipping {}: file already exists'.format(
+                            tr(os.path.basename(filepath))
+                        )
                     )
-                )
+                else:
+                    if bar:
+                        bar.update_received(file_size)
+                return
             else:
-                if bar:
-                    bar.update_received(file_size)
-            return
-        else:
-            if not is_part:
-                if bar:
-                    bar.done()
-                print('Overwriting %s' % tr(os.path.basename(filepath)), '...')
-    elif not os.path.exists(os.path.dirname(filepath)):
-        os.mkdir(os.path.dirname(filepath))
+                if not is_part:
+                    if bar:
+                        bar.done()
+                    if not force and auto_rename:
+                        path, ext = os.path.basename(filepath).rsplit('.', 1)
+                        finder = re.compile(' \([1-9]\d*?\)$')
+                        if (finder.search(path) is None):
+                            thisfile = path + ' (1).' + ext
+                        else:
+                            def numreturn(a):
+                                return ' (' + str(int(a.group()[2:-1]) + 1) + ').'
+                            thisfile = finder.sub(numreturn, path) + ext
+                        filepath = os.path.join(os.path.dirname(filepath), thisfile)
+                        print('Changing name to %s' % tr(os.path.basename(filepath)), '...')
+                        continue_renameing = True
+                        continue
+                    print('Overwriting %s' % tr(os.path.basename(filepath)), '...')
+        elif not os.path.exists(os.path.dirname(filepath)):
+            os.mkdir(os.path.dirname(filepath))
 
     temp_filepath = filepath + '.download' if file_size != float('inf') \
         else filepath
@@ -883,7 +905,7 @@ def download_urls(
     output_filepath = os.path.join(output_dir, output_filename)
 
     if total_size:
-        if not force and os.path.exists(output_filepath) \
+        if not force and os.path.exists(output_filepath) and not auto_rename\
                 and os.path.getsize(output_filepath) >= total_size * 0.9:
             print('Skipping %s: file already exists' % output_filepath)
             print()
@@ -1370,6 +1392,10 @@ def script_main(download, download_playlist, **kwargs):
         '-l', '--playlist', action='store_true',
         help='Prefer to download a playlist'
     )
+    download_grp.add_argument(
+        '-a', '--auto-rename', action='store_true', default=False,
+        help='Auto rename same name different files'
+    )
 
     proxy_grp = parser.add_argument_group('Proxy options')
     proxy_grp = proxy_grp.add_mutually_exclusive_group()
@@ -1414,11 +1440,16 @@ def script_main(download, download_playlist, **kwargs):
     global player
     global extractor_proxy
     global output_filename
+    global auto_rename
 
     output_filename = args.output_filename
     extractor_proxy = args.extractor_proxy
 
     info_only = args.info
+    if args.force:
+        force = True
+    if args.auto_rename:
+        auto_rename = True
     if args.url:
         dry_run = True
     if args.json:
@@ -1554,6 +1585,11 @@ def url_to_module(url):
     domain = r1(r'(\.[^.]+\.[^.]+)$', video_host) or video_host
     assert domain, 'unsupported url: ' + url
 
+    # all non-ASCII code points must be quoted (percent-encoded UTF-8)
+    url = ''.join([ch if ord(ch) in range(128) else parse.quote(ch) for ch in url])
+    video_host = r1(r'https?://([^/]+)/', url)
+    video_url = r1(r'https?://[^/]+(.*)', url)
+
     k = r1(r'([^.]+)', domain)
     if k in SITES:
         return (
@@ -1561,15 +1597,11 @@ def url_to_module(url):
             url
         )
     else:
-        import http.client
-        video_host = r1(r'https?://([^/]+)/', url)  # .cn could be removed
-        if url.startswith('https://'):
-            conn = http.client.HTTPSConnection(video_host)
-        else:
-            conn = http.client.HTTPConnection(video_host)
-        conn.request('HEAD', video_url, headers=fake_headers)
-        res = conn.getresponse()
-        location = res.getheader('location')
+        try:
+            location = get_location(url) # t.co isn't happy with fake_headers
+        except:
+            location = get_location(url, headers=fake_headers)
+
         if location and location != url and not location.startswith('/'):
             return url_to_module(location)
         else:

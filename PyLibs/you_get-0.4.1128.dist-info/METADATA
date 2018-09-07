@@ -1,3 +1,37 @@
+Metadata-Version: 2.1
+Name: you-get
+Version: 0.4.1128
+Summary: Dumb downloader that scrapes the web
+Home-page: https://you-get.org/
+Author: Mort Yao
+Author-email: mort.yao@gmail.com
+License: MIT
+Keywords: video download youtube youku niconico
+Platform: any
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: End Users/Desktop
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.0
+Classifier: Programming Language :: Python :: 3.1
+Classifier: Programming Language :: Python :: 3.2
+Classifier: Programming Language :: Python :: 3.3
+Classifier: Programming Language :: Python :: 3.4
+Classifier: Programming Language :: Python :: 3.5
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Topic :: Internet
+Classifier: Topic :: Internet :: WWW/HTTP
+Classifier: Topic :: Multimedia
+Classifier: Topic :: Multimedia :: Graphics
+Classifier: Topic :: Multimedia :: Sound/Audio
+Classifier: Topic :: Multimedia :: Video
+Classifier: Topic :: Utilities
+
 You-Get
 =======
 

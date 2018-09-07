@@ -41,6 +41,7 @@ from .kugou import *
 from .kuwo import *
 from .le import *
 from .lizhi import *
+from .longzhu import *
 from .magisto import *
 from .metacafe import *
 from .mgtv import *
@@ -87,3 +88,4 @@ from .ted import *
 from .khan import *
 from .zhanqi import *
 from .kuaishou import *
+from .zhibo import *

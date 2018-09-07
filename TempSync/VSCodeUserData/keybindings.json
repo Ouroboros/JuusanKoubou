@@ -44,5 +44,9 @@
                                     "key": "ctrl+alt+a",
                                     "command": "-extension.align",
                                     "when": "editorTextFocus"
+                                },
+                                {
+                                    "key": "shift+alt+r",
+                                    "command": "revealFileInOS"
                                 }
                             ]

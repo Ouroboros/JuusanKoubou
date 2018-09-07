@@ -200,9 +200,9 @@ class InstructionDescriptor:
 
     def __str__(self):
         return ' '.join([
-            '0x%02X %s' % (self.opcode, self.mnemonic),
-            self.operands and '%s' % (self.operands,) or '()',
-            ('%s' % self.flags) if self.flags != instruction.Flags.Empty else '',
+            f'{self.opcode:02X} {self.mnemonic}',
+            self.operands and f'{self.operands}'or '()',
+            f'{self.flags}' if self.flags != instruction.Flags.Empty else '',
         ])
 
 class InstructionTable:

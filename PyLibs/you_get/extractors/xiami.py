@@ -45,7 +45,11 @@ def xiami_download_pic(pic_url, file_name, output_dir):
             x.write(pic)
 
 def xiami_download_song(sid, output_dir = '.', info_only = False):
-    xml = get_content('http://www.xiami.com/song/playlist/id/%s/object_name/default/object_id/0' % sid, headers=fake_headers)
+    #xml = get_content('http://www.xiami.com/song/playlist/id/%s/object_name/default/object_id/0' % sid, headers=fake_headers)
+    headers = fake_headers.copy()
+    headers['Referer'] = 'http://www.xiami.com/song/3295592'
+    print(get_content('http://www.xiami.com/song/playlist/cat/json/id/3295592/type/mp3', headers=headers))
+    exit(0)
     doc = parseString(xml)
     i = doc.getElementsByTagName("track")[0]
     artist = i.getElementsByTagName("artist")[0].firstChild.nodeValue
