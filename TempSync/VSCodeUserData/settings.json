@@ -16,7 +16,7 @@
     "editor.renderWhitespace": "all",
     "editor.minimap.showSlider": "always",
     "files.trimTrailingWhitespace": true,
-    "editor.multiCursorModifier": "alt",
+    "editor.multiCursorModifier": "ctrlCmd",
     "editor.tokenColorCustomizations": {
         "comments": "#8A8A8A"
     },
