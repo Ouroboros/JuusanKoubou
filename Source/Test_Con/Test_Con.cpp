@@ -351,21 +351,15 @@ int main3()
 
 ForceInline VOID main2(LONG_PTR argc, PWSTR *argv)
 {
-    POINT cursor;
-    HMONITOR monitor;
-    MONITORINFOEX mi;
+    SYSTEM_MEMORY_LIST_COMMAND cmd;
+    BOOLEAN Enabled;
 
-    static char path[] = R"(D:\Dev\VSCode\data\extensions\zxh404.vscode-proto3-0.2.1\node_modules\npm\node_modules\npm-profile\node_modules\make-fetch-happen\node_modules\http-proxy-agent\node_modules\agent-base\node_modules\es6-promisify\node_modules\es6-promise\dist\es6-promise.auto.js)";
+    RtlAdjustPrivilege(SE_PROF_SINGLE_PROCESS_PRIVILEGE, TRUE, FALSE, &Enabled);
+    RtlAdjustPrivilege(SE_DEBUG_PRIVILEGE, TRUE, FALSE, &Enabled);
+    RtlAdjustPrivilege(SE_INCREASE_QUOTA_PRIVILEGE, TRUE, FALSE, &Enabled);
 
-    HANDLE f;
-
-    f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f != INVALID_HANDLE_VALUE)
-        *(int *)0 = 0;
-
-    CurrentPeb()->LongPathsEnabled = TRUE;
-
-    f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    cmd = MemoryPurgeStandbyList;
+    NtSetSystemInformation(SystemMemoryListInformation, &cmd, sizeof(cmd));
 
     Ps::ExitProcess(0);
 

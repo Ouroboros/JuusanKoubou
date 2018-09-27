@@ -75,5 +75,6 @@
     "git.path": "D:/Dev/PortableGit/bin/git.exe",
     "git.ignoreMissingGitWarning": true,
     "explorer.confirmDelete": false,
-    "materialTheme.fixIconsRunning": false
+    "materialTheme.fixIconsRunning": false,
+    "files.eol": "\n"
 }

@@ -14,7 +14,7 @@ def setTitle(text):
     if sys.platform == 'win32':
         windll.kernel32.SetConsoleTitleW(str(text))
     else:
-        pass
+        sys.stdout.write(f'\033]0;{text}\007')
 
 def clear():
     if sys.platform == 'win32':
