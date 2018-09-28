@@ -3,7 +3,18 @@ from ..common import *
 if sys.platform == 'win32':
     getch = ctypes.CFUNCTYPE(ctypes.c_int32)(('_getch', windll.msvcrt))
 else:
-    getch = input
+    def getch():
+        import tty
+        import termios
+
+        sys.stdin.flush()
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 def pause(text = None):
     if text is not None:
