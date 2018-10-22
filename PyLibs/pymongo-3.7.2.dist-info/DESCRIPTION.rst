@@ -1,37 +1,7 @@
-Metadata-Version: 2.0
-Name: pymongo
-Version: 3.4.0
-Summary: Python driver for MongoDB <http://www.mongodb.org>
-Home-page: http://github.com/mongodb/mongo-python-driver
-Author: Bernie Hackett
-Author-email: bernie@mongodb.com
-License: Apache License, Version 2.0
-Keywords: mongo,mongodb,pymongo,gridfs,bson
-Platform: UNKNOWN
-Classifier: Development Status :: 5 - Production/Stable
-Classifier: Intended Audience :: Developers
-Classifier: License :: OSI Approved :: Apache Software License
-Classifier: Operating System :: MacOS :: MacOS X
-Classifier: Operating System :: Microsoft :: Windows
-Classifier: Operating System :: POSIX
-Classifier: Programming Language :: Python :: 2
-Classifier: Programming Language :: Python :: 2.6
-Classifier: Programming Language :: Python :: 2.7
-Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.3
-Classifier: Programming Language :: Python :: 3.4
-Classifier: Programming Language :: Python :: 3.5
-Classifier: Programming Language :: Python :: Implementation :: CPython
-Classifier: Programming Language :: Python :: Implementation :: PyPy
-Classifier: Topic :: Database
-Provides-Extra: gssapi
-Requires-Dist: winkerberos (>=0.3.0); extra == 'gssapi'
-Provides-Extra: tls
-
 =======
 PyMongo
 =======
-:Info: See `the mongo site <http://www.mongodb.org>`_ for more information. See `github <http://github.com/mongodb/mongo-python-driver/tree>`_ for the latest source.
+:Info: See `the mongo site <http://www.mongodb.org>`_ for more information. See `GitHub <http://github.com/mongodb/mongo-python-driver>`_ for the latest source.
 :Author: Mike Dirolf
 :Maintainer: Bernie Hackett <bernie@mongodb.com>
 
@@ -46,7 +16,7 @@ is a `gridfs
 <http://www.mongodb.org/display/DOCS/GridFS+Specification>`_
 implementation on top of ``pymongo``.
 
-PyMongo 3.4 supports MongoDB 2.4, 2.6, 3.0, 3.2, and 3.4
+PyMongo supports MongoDB 2.6, 3.0, 3.2, 3.4, 3.6 and 4.0.
 
 Support / Feedback
 ==================
@@ -60,7 +30,7 @@ questions - you're more likely to get an answer on the `mongodb-user
 Bugs / Feature Requests
 =======================
 
-Think you鈥檝e found a bug? Want to see a new feature in PyMongo? Please open a
+Think youâ€™ve found a bug? Want to see a new feature in PyMongo? Please open a
 case in our issue management tool, JIRA:
 
 - `Create an account and login <https://jira.mongodb.org>`_.
@@ -91,7 +61,7 @@ Please include all of the following information when opening an issue:
 Security Vulnerabilities
 ------------------------
 
-If you鈥檝e identified a security vulnerability in a driver or any other
+If youâ€™ve identified a security vulnerability in a driver or any other
 MongoDB project, please report it according to the `instructions here
 <http://docs.mongodb.org/manual/tutorial/create-a-vulnerability-report>`_.
 
@@ -111,16 +81,16 @@ You can also download the project source and do::
 
   $ python setup.py install
 
-Do **not** install the "bson" package. PyMongo comes with its own bson package;
-doing "easy_install bson" installs a third-party package that is incompatible
-with PyMongo.
+Do **not** install the "bson" package from pypi. PyMongo comes with its own
+bson package; doing "easy_install bson" installs a third-party package that
+is incompatible with PyMongo.
 
 Dependencies
 ============
 
-PyMongo supports CPython 2.6, 2.7, 3.3+, PyPy, and PyPy3.
+PyMongo supports CPython 2.6, 2.7, 3.4+, PyPy, and PyPy3.
 
-Optional dependencies for GSSAPI and TLS:
+Optional dependencies:
 
 GSSAPI authentication requires `pykerberos
 <https://pypi.python.org/pypi/pykerberos>`_ on Unix or `WinKerberos
@@ -128,6 +98,11 @@ GSSAPI authentication requires `pykerberos
 dependency can be installed automatically along with PyMongo::
 
   $ python -m pip install pymongo[gssapi]
+
+Support for mongodb+srv:// URIs requires `dnspython
+<https://pypi.python.org/pypi/dnspython>`_::
+
+  $ python -m pip install pymongo[srv]
 
 TLS / SSL support may require `ipaddress
 <https://pypi.python.org/pypi/ipaddress>`_ and `certifi
@@ -138,20 +113,24 @@ PyMongo::
 
   $ python -m pip install pymongo[tls]
 
-You can install both dependencies automatically with the following
+Wire protocol compression with snappy requires `python-snappy
+<https://pypi.org/project/python-snappy>`_::
+
+  $ python -m pip install pymongo[snappy]
+
+You can install all dependencies automatically with the following
 command::
 
-  $ python -m pip install pymongo[gssapi,tls]
+  $ python -m pip install pymongo[snappy,gssapi,srv,tls]
 
 Other optional packages:
 
 - `backports.pbkdf2 <https://pypi.python.org/pypi/backports.pbkdf2/>`_,
-  improves authentication performance with SCRAM-SHA-1, the default
-  authentication mechanism for MongoDB 3.0+. It especially improves
-  performance on Python older than 2.7.8, or on Python 3 before Python 3.4.
+  improves authentication performance with SCRAM-SHA-1 and SCRAM-SHA-256.
+  It especially improves performance on Python versions older than 2.7.8.
 - `monotonic <https://pypi.python.org/pypi/monotonic>`_ adds support for
   a monotonic clock, which improves reliability in environments
-  where clock adjustments are frequent. Not needed in Python 3.3+.
+  where clock adjustments are frequent. Not needed in Python 3.
 
 
 Additional dependencies are:

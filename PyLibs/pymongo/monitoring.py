@@ -1,4 +1,4 @@
-# Copyright 2015 MongoDB, Inc.
+# Copyright 2015-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -137,7 +137,9 @@ will not add that listener to existing client instances.
 import sys
 import traceback
 
-from collections import namedtuple, Sequence
+from collections import namedtuple
+
+from bson.py3compat import abc
 from pymongo.helpers import _handle_exception
 
 _Listeners = namedtuple('Listeners',
@@ -290,7 +292,7 @@ def _to_micros(dur):
 
 def _validate_event_listeners(option, listeners):
     """Validate event listeners"""
-    if not isinstance(listeners, Sequence):
+    if not isinstance(listeners, abc.Sequence):
         raise TypeError("%s must be a list or tuple" % (option,))
     for listener in listeners:
         if not isinstance(listener, _EventListener):
@@ -515,12 +517,16 @@ class ServerOpeningEvent(_ServerEvent):
     .. versionadded:: 3.3
     """
 
+    __slots__ = ()
+
 
 class ServerClosedEvent(_ServerEvent):
     """Published when server is closed.
 
     .. versionadded:: 3.3
     """
+
+    __slots__ = ()
 
 
 class TopologyEvent(object):
@@ -569,12 +575,16 @@ class TopologyOpenedEvent(TopologyEvent):
     .. versionadded:: 3.3
     """
 
+    __slots__ = ()
+
 
 class TopologyClosedEvent(TopologyEvent):
     """Published when the topology is closed.
 
     .. versionadded:: 3.3
     """
+
+    __slots__ = ()
 
 
 class _ServerHeartbeatEvent(object):
@@ -597,6 +607,8 @@ class ServerHeartbeatStartedEvent(_ServerHeartbeatEvent):
 
     .. versionadded:: 3.3
     """
+
+    __slots__ = ()
 
 
 class ServerHeartbeatSucceededEvent(_ServerHeartbeatEvent):

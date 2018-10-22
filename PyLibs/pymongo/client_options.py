@@ -1,4 +1,4 @@
-# Copyright 2014-2015 MongoDB, Inc.
+# Copyright 2014-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -18,23 +18,25 @@ from bson.codec_options import _parse_codec_options
 from pymongo.auth import _build_credentials_tuple
 from pymongo.common import validate_boolean
 from pymongo import common
+from pymongo.compression_support import CompressionSettings
 from pymongo.errors import ConfigurationError
 from pymongo.monitoring import _EventListeners
 from pymongo.pool import PoolOptions
 from pymongo.read_concern import ReadConcern
-from pymongo.read_preferences import make_read_preference
+from pymongo.read_preferences import (make_read_preference,
+                                      read_pref_mode_from_name)
 from pymongo.ssl_support import get_ssl_context
 from pymongo.write_concern import WriteConcern
 
 
 def _parse_credentials(username, password, database, options):
     """Parse authentication credentials."""
-    mechanism = options.get('authmechanism', 'DEFAULT')
-    if username is None and mechanism != 'MONGODB-X509':
-        return None
-    source = options.get('authsource', database or 'admin')
-    return _build_credentials_tuple(
-        mechanism, source, username, password, options)
+    mechanism = options.get('authmechanism', 'DEFAULT' if username else None)
+    source = options.get('authsource')
+    if username or mechanism:
+        return _build_credentials_tuple(
+            mechanism, source, username, password, options, database)
+    return None
 
 
 def _parse_read_preference(options):
@@ -42,7 +44,8 @@ def _parse_read_preference(options):
     if 'read_preference' in options:
         return options['read_preference']
 
-    mode = options.get('readpreference', 0)
+    name = options.get('readpreference', 'primary')
+    mode = read_pref_mode_from_name(name)
     tags = options.get('readpreferencetags')
     max_staleness = options.get('maxstalenessseconds', -1)
     return make_read_preference(mode, tags, max_staleness)
@@ -51,7 +54,7 @@ def _parse_read_preference(options):
 def _parse_write_concern(options):
     """Parse write concern options."""
     concern = options.get('w')
-    wtimeout = options.get('wtimeout')
+    wtimeout = options.get('wtimeout', options.get('wtimeoutms'))
     j = options.get('j', options.get('journal'))
     fsync = options.get('fsync')
     return WriteConcern(concern, wtimeout, j, fsync)
@@ -91,7 +94,13 @@ def _parse_ssl_options(options):
 
     if use_ssl is True:
         ctx = get_ssl_context(
-            certfile, keyfile, passphrase, ca_certs, cert_reqs, crlfile)
+            certfile,
+            keyfile,
+            passphrase,
+            ca_certs,
+            cert_reqs,
+            crlfile,
+            match_hostname)
         return ctx, match_hostname
     return None, match_hostname
 
@@ -100,25 +109,33 @@ def _parse_pool_options(options):
     """Parse connection pool options."""
     max_pool_size = options.get('maxpoolsize', common.MAX_POOL_SIZE)
     min_pool_size = options.get('minpoolsize', common.MIN_POOL_SIZE)
-    max_idle_time_ms = options.get('maxidletimems', common.MAX_IDLE_TIME_MS)
+    default_idle_seconds = common.validate_timeout_or_none(
+        'maxidletimems', common.MAX_IDLE_TIME_MS)
+    max_idle_time_seconds = options.get('maxidletimems', default_idle_seconds)
     if max_pool_size is not None and min_pool_size > max_pool_size:
         raise ValueError("minPoolSize must be smaller or equal to maxPoolSize")
     connect_timeout = options.get('connecttimeoutms', common.CONNECT_TIMEOUT)
-    socket_keepalive = options.get('socketkeepalive', False)
+    socket_keepalive = options.get('socketkeepalive', True)
     socket_timeout = options.get('sockettimeoutms')
     wait_queue_timeout = options.get('waitqueuetimeoutms')
     wait_queue_multiple = options.get('waitqueuemultiple')
     event_listeners = options.get('event_listeners')
     appname = options.get('appname')
+    driver = options.get('driver')
+    compression_settings = CompressionSettings(
+        options.get('compressors', []),
+        options.get('zlibcompressionlevel', -1))
     ssl_context, ssl_match_hostname = _parse_ssl_options(options)
     return PoolOptions(max_pool_size,
                        min_pool_size,
-                       max_idle_time_ms,
+                       max_idle_time_seconds,
                        connect_timeout, socket_timeout,
                        wait_queue_timeout, wait_queue_multiple,
                        ssl_context, ssl_match_hostname, socket_keepalive,
                        _EventListeners(event_listeners),
-                       appname)
+                       appname,
+                       driver,
+                       compression_settings)
 
 
 class ClientOptions(object):
@@ -145,6 +162,7 @@ class ClientOptions(object):
         self.__connect = options.get('connect')
         self.__heartbeat_frequency = options.get(
             'heartbeatfrequencyms', common.HEARTBEAT_FREQUENCY)
+        self.__retry_writes = options.get('retrywrites', common.RETRY_WRITES)
 
     @property
     def _options(self):
@@ -205,3 +223,8 @@ class ClientOptions(object):
     def read_concern(self):
         """A :class:`~pymongo.read_concern.ReadConcern` instance."""
         return self.__read_concern
+
+    @property
+    def retry_writes(self):
+        """If this instance should retry supported write operations."""
+        return self.__retry_writes

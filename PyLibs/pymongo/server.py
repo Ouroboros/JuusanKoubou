@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2014-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -18,8 +18,7 @@ import contextlib
 
 from datetime import datetime
 
-from pymongo.errors import ConfigurationError
-from pymongo.message import _Query, _convert_exception
+from pymongo.message import _convert_exception
 from pymongo.response import Response, ExhaustResponse
 from pymongo.server_type import SERVER_TYPE
 
@@ -64,19 +63,6 @@ class Server(object):
         """Check the server's state soon."""
         self._monitor.request_check()
 
-    def send_message(self, message, all_credentials):
-        """Send an unacknowledged message to MongoDB.
-
-        Can raise ConnectionFailure.
-
-        :Parameters:
-          - `message`: (request_id, data).
-          - `all_credentials`: dict, maps auth source to MongoCredential.
-        """
-        _, data, max_doc_size = self._split_message(message)
-        with self.get_socket(all_credentials) as sock_info:
-            sock_info.send_message(data, max_doc_size)
-
     def send_message_with_response(
             self,
             operation,
@@ -103,37 +89,21 @@ class Server(object):
             if publish:
                 start = datetime.now()
 
-            use_find_cmd = False
-            if sock_info.max_wire_version >= 4:
-                if not exhaust:
-                    use_find_cmd = True
-            elif (isinstance(operation, _Query) and
-                  not operation.read_concern.ok_for_legacy):
-                raise ConfigurationError(
-                    'read concern level of %s is not valid '
-                    'with a max wire version of %d.'
-                    % (operation.read_concern.level,
-                       sock_info.max_wire_version))
-            if (isinstance(operation, _Query) and
-                    sock_info.max_wire_version < 5 and
-                    operation.collation is not None):
-                raise ConfigurationError(
-                    'Specifying a collation is unsupported with a max wire '
-                    'version of %d.' % (sock_info.max_wire_version,))
+            use_find_cmd = operation.use_command(sock_info, exhaust)
             message = operation.get_message(
-                set_slave_okay, sock_info.is_mongos, use_find_cmd)
+                set_slave_okay, sock_info, use_find_cmd)
             request_id, data, max_doc_size = self._split_message(message)
 
             if publish:
                 encoding_duration = datetime.now() - start
-                cmd, dbn = operation.as_command()
+                cmd, dbn = operation.as_command(sock_info)
                 listeners.publish_command_start(
                     cmd, dbn, request_id, sock_info.address)
                 start = datetime.now()
 
             try:
                 sock_info.send_message(data, max_doc_size)
-                response_data = sock_info.receive_message(1, request_id)
+                reply = sock_info.receive_message(request_id)
             except Exception as exc:
                 if publish:
                     duration = (datetime.now() - start) + encoding_duration
@@ -148,7 +118,7 @@ class Server(object):
 
             if exhaust:
                 return ExhaustResponse(
-                    data=response_data,
+                    data=reply,
                     address=self._description.address,
                     socket_info=sock_info,
                     pool=self._pool,
@@ -157,16 +127,14 @@ class Server(object):
                     from_command=use_find_cmd)
             else:
                 return Response(
-                    data=response_data,
+                    data=reply,
                     address=self._description.address,
                     duration=duration,
                     request_id=request_id,
                     from_command=use_find_cmd)
 
-    @contextlib.contextmanager
     def get_socket(self, all_credentials, checkout=False):
-        with self.pool.get_socket(all_credentials, checkout) as sock_info:
-            yield sock_info
+        return self.pool.get_socket(all_credentials, checkout)
 
     @property
     def description(self):

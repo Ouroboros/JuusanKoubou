@@ -1,4 +1,4 @@
-# Copyright 2012-2015 MongoDB, Inc.
+# Copyright 2012-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License",
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
 
 """Utilities for choosing which member of a replica set to read from."""
 
-from collections import Mapping
-
-from bson.py3compat import integer_types
+from bson.py3compat import abc, integer_types
 from pymongo import max_staleness_selectors
 from pymongo.errors import ConfigurationError
 from pymongo.server_selectors import (member_with_tags_server_selector,
@@ -54,7 +52,7 @@ def _validate_tag_sets(tag_sets):
             " tags") % (tag_sets,))
 
     for tags in tag_sets:
-        if not isinstance(tags, Mapping):
+        if not isinstance(tags, abc.Mapping):
             raise TypeError(
                 "Tag set %r invalid, must be an instance of dict, "
                 "bson.son.SON or other type that inherits from "
@@ -100,6 +98,12 @@ class _ServerMode(object):
         """The name of this read preference.
         """
         return self.__class__.__name__
+
+    @property
+    def mongos_mode(self):
+        """The mongos mode of this read preference.
+        """
+        return self.__mongos_mode
 
     @property
     def document(self):
@@ -194,6 +198,8 @@ class Primary(_ServerMode):
       the replica set.
     """
 
+    __slots__ = ()
+
     def __init__(self):
         super(Primary, self).__init__(_PRIMARY)
 
@@ -230,6 +236,8 @@ class PrimaryPreferred(_ServerMode):
         90 seconds.
     """
 
+    __slots__ = ()
+
     def __init__(self, tag_sets=None, max_staleness=-1):
         super(PrimaryPreferred, self).__init__(_PRIMARY_PREFERRED,
                                                tag_sets,
@@ -265,6 +273,8 @@ class Secondary(_ServerMode):
         90 seconds.
     """
 
+    __slots__ = ()
+
     def __init__(self, tag_sets=None, max_staleness=-1):
         super(Secondary, self).__init__(_SECONDARY, tag_sets, max_staleness)
 
@@ -294,6 +304,8 @@ class SecondaryPreferred(_ServerMode):
         Default -1, meaning no maximum. If it is set, it must be at least
         90 seconds.
     """
+
+    __slots__ = ()
 
     def __init__(self, tag_sets=None, max_staleness=-1):
         super(SecondaryPreferred, self).__init__(_SECONDARY_PREFERRED,
@@ -331,6 +343,8 @@ class Nearest(_ServerMode):
         Default -1, meaning no maximum. If it is set, it must be at least
         90 seconds.
     """
+
+    __slots__ = ()
 
     def __init__(self, tag_sets=None, max_staleness=-1):
         super(Nearest, self).__init__(_NEAREST, tag_sets, max_staleness)

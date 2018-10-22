@@ -1,4 +1,4 @@
-# Copyright 2014-2015 MongoDB, Inc.
+# Copyright 2014-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -44,6 +44,8 @@ from pymongo.errors import ConfigurationError
 _WINCERTSLOCK = threading.Lock()
 _WINCERTS = None
 
+_PY37PLUS = sys.version_info[:2] >= (3, 7)
+
 if HAVE_SSL:
     try:
         # Python 2.7.9+, 3.2+, PyPy 2.5.1+, etc.
@@ -87,11 +89,35 @@ if HAVE_SSL:
     #   parameter.
     def get_ssl_context(*args):
         """Create and return an SSLContext object."""
-        certfile, keyfile, passphrase, ca_certs, cert_reqs, crlfile = args
+        (certfile,
+         keyfile,
+         passphrase,
+         ca_certs,
+         cert_reqs,
+         crlfile,
+         match_hostname) = args
+        verify_mode = ssl.CERT_REQUIRED if cert_reqs is None else cert_reqs
         # Note PROTOCOL_SSLv23 is about the most misleading name imaginable.
         # This configures the server and client to negotiate the
         # highest protocol version they both support. A very good thing.
-        ctx = SSLContext(ssl.PROTOCOL_SSLv23)
+        # PROTOCOL_TLS_CLIENT was added in CPython 3.6, deprecating
+        # PROTOCOL_SSLv23.
+        ctx = SSLContext(
+            getattr(ssl, "PROTOCOL_TLS_CLIENT", ssl.PROTOCOL_SSLv23))
+        # SSLContext.check_hostname was added in CPython 2.7.9 and 3.4.
+        # PROTOCOL_TLS_CLIENT (added in Python 3.6) enables it by default.
+        if hasattr(ctx, "check_hostname"):
+            if _PY37PLUS and verify_mode != ssl.CERT_NONE:
+                # Python 3.7 uses OpenSSL's hostname matching implementation
+                # making it the obvious version to start using this with.
+                # Python 3.6 might have been a good version, but it suffers
+                # from https://bugs.python.org/issue32185.
+                # We'll use our bundled match_hostname for older Python
+                # versions, which also supports IP address matching
+                # with Python < 3.5.
+                ctx.check_hostname = match_hostname
+            else:
+                ctx.check_hostname = False
         if hasattr(ctx, "options"):
             # Explicitly disable SSLv2, SSLv3 and TLS compression. Note that
             # up to date versions of MongoDB 2.4 and above already disable
@@ -149,7 +175,7 @@ if HAVE_SSL:
                     "`ssl_cert_reqs` is not ssl.CERT_NONE and no system "
                     "CA certificates could be loaded. `ssl_ca_certs` is "
                     "required.")
-        ctx.verify_mode = ssl.CERT_REQUIRED if cert_reqs is None else cert_reqs
+        ctx.verify_mode = verify_mode
         return ctx
 else:
     def validate_cert_reqs(option, dummy):

@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2009-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@
 
 """Tools for representing files stored in GridFS."""
 import datetime
+import hashlib
 import math
 import os
 
-from hashlib import md5
-
+from bson.son import SON
 from bson.binary import Binary
 from bson.objectid import ObjectId
 from bson.py3compat import text_type, StringIO
@@ -48,8 +48,8 @@ NEWLN = b"\n"
 # Slightly under a power of 2, to work well with server's record allocations.
 DEFAULT_CHUNK_SIZE = 255 * 1024
 
-_C_INDEX = [("files_id", ASCENDING), ("n", ASCENDING)]
-_F_INDEX = [("filename", ASCENDING), ("uploadDate", ASCENDING)]
+_C_INDEX = SON([("files_id", ASCENDING), ("n", ASCENDING)])
+_F_INDEX = SON([("filename", ASCENDING), ("uploadDate", ASCENDING)])
 
 
 def _grid_in_property(field_name, docstring, read_only=False,
@@ -99,7 +99,8 @@ def _grid_out_property(field_name, docstring):
 class GridIn(object):
     """Class to write data to GridFS.
     """
-    def __init__(self, root_collection, **kwargs):
+    def __init__(
+            self, root_collection, session=None, disable_md5=False, **kwargs):
         """Write a file to GridFS
 
         Application developers should generally not need to
@@ -135,7 +136,17 @@ class GridIn(object):
 
         :Parameters:
           - `root_collection`: root collection to write to
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession` to use for all
+            commands
+          - `disable_md5` (optional): When True, an MD5 checksum will not be
+            computed for the uploaded file. Useful in environments where
+            MD5 cannot be used for regulatory or other reasons. Defaults to
+            False.
           - `**kwargs` (optional): file level options (see above)
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
 
         .. versionchanged:: 3.0
            `root_collection` must use an acknowledged
@@ -145,7 +156,6 @@ class GridIn(object):
             raise TypeError("root_collection must be an "
                             "instance of Collection")
 
-        # With w=0, 'filemd5' might run before the final chunks are written.
         if not root_collection.write_concern.acknowledged:
             raise ConfigurationError('root_collection must use '
                                      'acknowledged write_concern')
@@ -159,10 +169,12 @@ class GridIn(object):
         coll = root_collection.with_options(
             read_preference=ReadPreference.PRIMARY)
 
-        kwargs['md5'] = md5()
+        if not disable_md5:
+            kwargs["md5"] = hashlib.md5()
         # Defaults
         kwargs["_id"] = kwargs.get("_id", ObjectId())
         kwargs["chunkSize"] = kwargs.get("chunkSize", DEFAULT_CHUNK_SIZE)
+        object.__setattr__(self, "_session", session)
         object.__setattr__(self, "_coll", coll)
         object.__setattr__(self, "_chunks", coll.chunks)
         object.__setattr__(self, "_file", kwargs)
@@ -172,15 +184,17 @@ class GridIn(object):
         object.__setattr__(self, "_closed", False)
         object.__setattr__(self, "_ensured_index", False)
 
-    def __create_index(self, collection, index, unique):
-        doc = collection.find_one(projection={"_id": 1})
+    def __create_index(self, collection, index_key, unique):
+        doc = collection.find_one(projection={"_id": 1}, session=self._session)
         if doc is None:
             try:
-                indexes = list(collection.list_indexes())
+                index_keys = [index_spec['key'] for index_spec in
+                              collection.list_indexes(session=self._session)]
             except OperationFailure:
-                indexes = []
-            if index not in indexes:
-                collection.create_index(index, unique=unique)
+                index_keys = []
+            if index_key not in index_keys:
+                collection.create_index(
+                    index_key.items(), unique=unique, session=self._session)
 
     def __ensure_indexes(self):
         if not object.__getattribute__(self, "_ensured_index"):
@@ -191,10 +205,11 @@ class GridIn(object):
     def abort(self):
         """Remove all chunks/files that may have been uploaded and close.
         """
-        self._coll.chunks.delete_many({"files_id": self._file['_id']})
-        self._coll.files.delete_one({"_id": self._file['_id']})
+        self._coll.chunks.delete_many(
+            {"files_id": self._file['_id']}, session=self._session)
+        self._coll.files.delete_one(
+            {"_id": self._file['_id']}, session=self._session)
         object.__setattr__(self, "_closed", True)
-
 
     @property
     def closed(self):
@@ -215,7 +230,7 @@ class GridIn(object):
                                     "Date that this file was uploaded.",
                                     closed_only=True)
     md5 = _grid_in_property("md5", "MD5 of the contents of this file "
-                            "(generated on the server).",
+                            "if an md5 sum was created.",
                             closed_only=True)
 
     def __getattr__(self, name):
@@ -240,10 +255,9 @@ class GridIn(object):
     def __flush_data(self, data):
         """Flush `data` to a chunk.
         """
-        # Ensure the index, even if there's nothing to write, so
-        # the filemd5 command always succeeds.
         self.__ensure_indexes()
-        self._file['md5'].update(data)
+        if 'md5' in self._file:
+            self._file['md5'].update(data)
 
         if not data:
             return
@@ -254,7 +268,7 @@ class GridIn(object):
                  "data": Binary(data)}
 
         try:
-            self._chunks.insert_one(chunk)
+            self._chunks.insert_one(chunk, session=self._session)
         except DuplicateKeyError:
             self._raise_file_exists(self._file['_id'])
         self._chunk_number += 1
@@ -273,11 +287,13 @@ class GridIn(object):
         try:
             self.__flush_buffer()
 
-            self._file['md5'] = self._file["md5"].hexdigest()
+            if "md5" in self._file:
+                self._file["md5"] = self._file["md5"].hexdigest()
             self._file["length"] = self._position
             self._file["uploadDate"] = datetime.datetime.utcnow()
 
-            return self._coll.files.insert_one(self._file)
+            return self._coll.files.insert_one(
+                self._file, session=self._session)
         except DuplicateKeyError:
             self._raise_file_exists(self._id)
 
@@ -381,7 +397,8 @@ class GridIn(object):
 class GridOut(object):
     """Class to read data out of GridFS.
     """
-    def __init__(self, root_collection, file_id=None, file_document=None):
+    def __init__(self, root_collection, file_id=None, file_document=None,
+                 session=None):
         """Read a file from GridFS
 
         Application developers should generally not need to
@@ -398,6 +415,12 @@ class GridOut(object):
           - `file_id` (optional): value of ``"_id"`` for the file to read
           - `file_document` (optional): file document from
             `root_collection.files`
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession` to use for all
+            commands
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
 
         .. versionchanged:: 3.0
            Creating a GridOut does not immediately retrieve the file metadata
@@ -413,6 +436,7 @@ class GridOut(object):
         self.__buffer = EMPTY
         self.__position = 0
         self._file = file_document
+        self._session = session
 
     _id = _grid_out_property("_id", "The ``'_id'`` value for this file.")
     filename = _grid_out_property("filename", "Name of this file.")
@@ -425,11 +449,12 @@ class GridOut(object):
     aliases = _grid_out_property("aliases", "List of aliases for this file.")
     metadata = _grid_out_property("metadata", "Metadata attached to this file.")
     md5 = _grid_out_property("md5", "MD5 of the contents of this file "
-                             "(generated on the server).")
+                             "if an md5 sum was created.")
 
     def _ensure_file(self):
         if not self._file:
-            self._file = self.__files.find_one({"_id": self.__file_id})
+            self._file = self.__files.find_one({"_id": self.__file_id},
+                                               session=self._session)
             if not self._file:
                 raise NoFile("no file in gridfs collection %r with _id %r" %
                              (self.__files, self.__file_id))
@@ -453,7 +478,8 @@ class GridOut(object):
         elif self.__position < int(self.length):
             chunk_number = int((received + self.__position) / chunk_size)
             chunk = self.__chunks.find_one({"files_id": self._id,
-                                            "n": chunk_number})
+                                            "n": chunk_number},
+                                           session=self._session)
             if not chunk:
                 raise CorruptGridFile("no chunk #%d" % chunk_number)
 
@@ -495,7 +521,8 @@ class GridOut(object):
         # Detect extra chunks.
         max_chunk_n = math.ceil(self.length / float(self.chunk_size))
         chunk = self.__chunks.find_one({"files_id": self._id,
-                                        "n": {"$gte": max_chunk_n}})
+                                        "n": {"$gte": max_chunk_n}},
+                                       session=self._session)
         # According to spec, ignore extra chunks if they are empty.
         if chunk is not None and len(chunk['data']):
             raise CorruptGridFile(
@@ -584,7 +611,7 @@ class GridOut(object):
         useful when serving files using a webserver that handles
         such an iterator efficiently.
         """
-        return GridOutIterator(self, self.__chunks)
+        return GridOutIterator(self, self.__chunks, self._session)
 
     def close(self):
         """Make GridOut more generically file-like."""
@@ -604,9 +631,10 @@ class GridOut(object):
 
 
 class GridOutIterator(object):
-    def __init__(self, grid_out, chunks):
+    def __init__(self, grid_out, chunks, session):
         self.__id = grid_out._id
         self.__chunks = chunks
+        self.__session = session
         self.__current_chunk = 0
         self.__max_chunk = math.ceil(float(grid_out.length) /
                                      grid_out.chunk_size)
@@ -618,7 +646,8 @@ class GridOutIterator(object):
         if self.__current_chunk >= self.__max_chunk:
             raise StopIteration
         chunk = self.__chunks.find_one({"files_id": self.__id,
-                                        "n": self.__current_chunk})
+                                        "n": self.__current_chunk},
+                                       session=self.__session)
         if not chunk:
             raise CorruptGridFile("no chunk #%d" % self.__current_chunk)
         self.__current_chunk += 1
@@ -632,7 +661,8 @@ class GridOutCursor(Cursor):
     of an arbitrary query against the GridFS files collection.
     """
     def __init__(self, collection, filter=None, skip=0, limit=0,
-                 no_cursor_timeout=False, sort=None, batch_size=0):
+                 no_cursor_timeout=False, sort=None, batch_size=0,
+                 session=None):
         """Create a new cursor, similar to the normal
         :class:`~pymongo.cursor.Cursor`.
 
@@ -649,14 +679,15 @@ class GridOutCursor(Cursor):
         super(GridOutCursor, self).__init__(
             collection.files, filter, skip=skip, limit=limit,
             no_cursor_timeout=no_cursor_timeout, sort=sort,
-            batch_size=batch_size)
+            batch_size=batch_size, session=session)
 
     def next(self):
         """Get next GridOut object from cursor.
         """
         # Work around "super is not iterable" issue in Python 3.x
         next_file = super(GridOutCursor, self).next()
-        return GridOut(self.__root_collection, file_document=next_file)
+        return GridOut(self.__root_collection, file_document=next_file,
+                       session=self.session)
 
     __next__ = next
 
@@ -666,7 +697,7 @@ class GridOutCursor(Cursor):
     def remove_option(self, *args, **kwargs):
         raise NotImplementedError("Method does not exist for GridOutCursor")
 
-    def _clone_base(self):
+    def _clone_base(self, session):
         """Creates an empty GridOutCursor for information to be copied into.
         """
-        return GridOutCursor(self.__root_collection)
+        return GridOutCursor(self.__root_collection, session=session)

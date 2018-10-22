@@ -1,4 +1,4 @@
-# Copyright 2014-2016 MongoDB, Inc.
+# Copyright 2014-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -61,6 +61,9 @@ class TopologyDescription(object):
         self._incompatible_err = None
 
         for s in self._server_descriptions.values():
+            if not s.is_server_type_known:
+                continue
+
             # s.min/max_wire_version is the server's wire protocol.
             # MIN/MAX_SUPPORTED_WIRE_VERSION is what PyMongo supports.
             server_too_new = (
@@ -73,17 +76,40 @@ class TopologyDescription(object):
                 s.max_wire_version is not None
                 and s.max_wire_version < common.MIN_SUPPORTED_WIRE_VERSION)
 
-            if server_too_new or server_too_old:
+            if server_too_new:
                 self._incompatible_err = (
-                    "Server at %s:%d "
-                    "uses wire protocol versions %d through %d, "
-                    "but PyMongo only supports %d through %d"
+                    "Server at %s:%d requires wire version %d, but this "
+                    "version of PyMongo only supports up to %d."
                     % (s.address[0], s.address[1],
-                       s.min_wire_version, s.max_wire_version,
+                       s.min_wire_version, common.MAX_SUPPORTED_WIRE_VERSION))
+
+            elif server_too_old:
+                self._incompatible_err = (
+                    "Server at %s:%d reports wire version %d, but this "
+                    "version of PyMongo requires at least %d (MongoDB %s)."
+                    % (s.address[0], s.address[1],
+                       s.max_wire_version,
                        common.MIN_SUPPORTED_WIRE_VERSION,
-                       common.MAX_SUPPORTED_WIRE_VERSION))
+                       common.MIN_SUPPORTED_SERVER_VERSION))
 
                 break
+
+        # Server Discovery And Monitoring Spec: Whenever a client updates the
+        # TopologyDescription from an ismaster response, it MUST set
+        # TopologyDescription.logicalSessionTimeoutMinutes to the smallest
+        # logicalSessionTimeoutMinutes value among ServerDescriptions of all
+        # data-bearing server types. If any have a null
+        # logicalSessionTimeoutMinutes, then
+        # TopologyDescription.logicalSessionTimeoutMinutes MUST be set to null.
+        readable_servers = self.readable_servers
+        if not readable_servers:
+            self._ls_timeout_minutes = None
+        elif any(s.logical_session_timeout_minutes is None
+                 for s in readable_servers):
+            self._ls_timeout_minutes = None
+        else:
+            self._ls_timeout_minutes = min(s.logical_session_timeout_minutes
+                                           for s in readable_servers)
 
     def check_compatible(self):
         """Raise ConfigurationError if any server is incompatible.
@@ -154,10 +180,26 @@ class TopologyDescription(object):
         return self._max_election_id
 
     @property
+    def logical_session_timeout_minutes(self):
+        """Minimum logical session timeout, or None."""
+        return self._ls_timeout_minutes
+
+    @property
     def known_servers(self):
         """List of Servers of types besides Unknown."""
         return [s for s in self._server_descriptions.values()
                 if s.is_server_type_known]
+
+    @property
+    def has_known_servers(self):
+        """Whether there are any Servers of types besides Unknown."""
+        return any(s for s in self._server_descriptions.values()
+                   if s.is_server_type_known)
+
+    @property
+    def readable_servers(self):
+        """List of readable Servers."""
+        return [s for s in self._server_descriptions.values() if s.is_readable]
 
     @property
     def common_wire_version(self):

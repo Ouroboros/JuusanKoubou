@@ -1,4 +1,4 @@
-# Copyright 2011-2015 MongoDB, Inc.
+# Copyright 2011-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -13,6 +13,7 @@
 # permissions and limitations under the License.
 
 import contextlib
+import copy
 import os
 import platform
 import socket
@@ -28,15 +29,27 @@ except ImportError:
     class SSLError(socket.error):
         pass
 
+try:
+    from ssl import CertificateError as _SSLCertificateError
+except ImportError:
+    class _SSLCertificateError(ValueError):
+        pass
+
 
 from bson import DEFAULT_CODEC_OPTIONS
-from bson.py3compat import imap, itervalues, _unicode
+from bson.py3compat import imap, itervalues, _unicode, integer_types
 from bson.son import SON
 from pymongo import auth, helpers, thread_util, __version__
-from pymongo.common import MAX_MESSAGE_SIZE
+from pymongo.client_session import _validate_session_write_concern
+from pymongo.common import (MAX_BSON_SIZE,
+                            MAX_MESSAGE_SIZE,
+                            MAX_WIRE_VERSION,
+                            MAX_WRITE_BATCH_SIZE,
+                            ORDERED_TYPES)
 from pymongo.errors import (AutoReconnect,
                             ConnectionFailure,
                             ConfigurationError,
+                            InvalidOperation,
                             DocumentTooLarge,
                             NetworkTimeout,
                             NotMasterError,
@@ -46,7 +59,6 @@ from pymongo.monotonic import time as _time
 from pymongo.network import (command,
                              receive_message,
                              SocketChecker)
-from pymongo.read_concern import DEFAULT_READ_CONCERN
 from pymongo.read_preferences import ReadPreference
 from pymongo.server_type import SERVER_TYPE
 # Always use our backport so we always have support for IP address matching
@@ -111,17 +123,75 @@ except ImportError:
         """Dummy function for platforms that don't provide fcntl."""
         pass
 
+_MAX_TCP_KEEPIDLE = 300
+_MAX_TCP_KEEPINTVL = 10
+_MAX_TCP_KEEPCNT = 9
+
+if sys.platform == 'win32':
+    try:
+        import _winreg as winreg
+    except ImportError:
+        import winreg
+
+    try:
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters") as key:
+            _DEFAULT_TCP_IDLE_MS, _ = winreg.QueryValueEx(key, "KeepAliveTime")
+            _DEFAULT_TCP_INTERVAL_MS, _ = winreg.QueryValueEx(
+                key, "KeepAliveInterval")
+            # Make sure these are integers.
+            if not isinstance(_DEFAULT_TCP_IDLE_MS, integer_types):
+                raise ValueError
+            if not isinstance(_DEFAULT_TCP_INTERVAL_MS, integer_types):
+                raise ValueError
+    except (OSError, ValueError):
+        # We could not check the default values so do not attempt to override.
+        def _set_keepalive_times(dummy):
+            pass
+    else:
+        def _set_keepalive_times(sock):
+            idle_ms = min(_DEFAULT_TCP_IDLE_MS, _MAX_TCP_KEEPIDLE * 1000)
+            interval_ms = min(_DEFAULT_TCP_INTERVAL_MS,
+                              _MAX_TCP_KEEPINTVL * 1000)
+            if (idle_ms < _DEFAULT_TCP_IDLE_MS or
+                    interval_ms < _DEFAULT_TCP_INTERVAL_MS):
+                sock.ioctl(socket.SIO_KEEPALIVE_VALS,
+                           (1, idle_ms, interval_ms))
+else:
+    def _set_tcp_option(sock, tcp_option, max_value):
+        if hasattr(socket, tcp_option):
+            sockopt = getattr(socket, tcp_option)
+            try:
+                # PYTHON-1350 - NetBSD doesn't implement getsockopt for
+                # TCP_KEEPIDLE and friends. Don't attempt to set the
+                # values there.
+                default = sock.getsockopt(socket.IPPROTO_TCP, sockopt)
+                if default > max_value:
+                    sock.setsockopt(socket.IPPROTO_TCP, sockopt, max_value)
+            except socket.error:
+                pass
+
+    def _set_keepalive_times(sock):
+        _set_tcp_option(sock, 'TCP_KEEPIDLE', _MAX_TCP_KEEPIDLE)
+        _set_tcp_option(sock, 'TCP_KEEPINTVL', _MAX_TCP_KEEPINTVL)
+        _set_tcp_option(sock, 'TCP_KEEPCNT', _MAX_TCP_KEEPCNT)
 
 _METADATA = SON([
     ('driver', SON([('name', 'PyMongo'), ('version', __version__)])),
 ])
 
 if sys.platform.startswith('linux'):
+    # platform.linux_distribution was deprecated in Python 3.5.
+    if sys.version_info[:2] < (3, 5):
+        # Distro name and version (e.g. Ubuntu 16.04 xenial)
+        _name = ' '.join([part for part in
+                          platform.linux_distribution() if part])
+    else:
+        _name = platform.system()
     _METADATA['os'] = SON([
         ('type', platform.system()),
-        # Distro name and version (e.g. Ubuntu 16.04 xenial)
-        ('name', ' '.join([part for part in
-                           platform.linux_distribution() if part])),
+        ('name', _name),
         ('architecture', platform.machine()),
         # Kernel version (e.g. 4.4.0-17-generic).
         ('version', platform.release())
@@ -189,7 +259,7 @@ else:
 u'foo'.encode('idna')
 
 
-def _raise_connection_failure(address, error):
+def _raise_connection_failure(address, error, msg_prefix=None):
     """Convert a socket.error to ConnectionFailure and raise it."""
     host, port = address
     # If connecting to a Unix socket, port will be None.
@@ -197,6 +267,8 @@ def _raise_connection_failure(address, error):
         msg = '%s:%d: %s' % (host, port, error)
     else:
         msg = '%s: %s' % (host, error)
+    if msg_prefix:
+        msg = msg_prefix + msg
     if isinstance(error, socket.timeout):
         raise NetworkTimeout(msg)
     elif isinstance(error, SSLError) and 'timed out' in str(error):
@@ -213,22 +285,25 @@ def _raise_connection_failure(address, error):
 
 class PoolOptions(object):
 
-    __slots__ = ('__max_pool_size', '__min_pool_size', '__max_idle_time_ms',
+    __slots__ = ('__max_pool_size', '__min_pool_size',
+                 '__max_idle_time_seconds',
                  '__connect_timeout', '__socket_timeout',
                  '__wait_queue_timeout', '__wait_queue_multiple',
                  '__ssl_context', '__ssl_match_hostname', '__socket_keepalive',
-                 '__event_listeners', '__appname', '__metadata')
+                 '__event_listeners', '__appname', '__driver', '__metadata',
+                 '__compression_settings')
 
     def __init__(self, max_pool_size=100, min_pool_size=0,
-                 max_idle_time_ms=None, connect_timeout=None,
+                 max_idle_time_seconds=None, connect_timeout=None,
                  socket_timeout=None, wait_queue_timeout=None,
                  wait_queue_multiple=None, ssl_context=None,
-                 ssl_match_hostname=True, socket_keepalive=False,
-                 event_listeners=None, appname=None):
+                 ssl_match_hostname=True, socket_keepalive=True,
+                 event_listeners=None, appname=None, driver=None,
+                 compression_settings=None):
 
         self.__max_pool_size = max_pool_size
         self.__min_pool_size = min_pool_size
-        self.__max_idle_time_ms = max_idle_time_ms
+        self.__max_idle_time_seconds = max_idle_time_seconds
         self.__connect_timeout = connect_timeout
         self.__socket_timeout = socket_timeout
         self.__wait_queue_timeout = wait_queue_timeout
@@ -238,9 +313,30 @@ class PoolOptions(object):
         self.__socket_keepalive = socket_keepalive
         self.__event_listeners = event_listeners
         self.__appname = appname
-        self.__metadata = _METADATA.copy()
+        self.__driver = driver
+        self.__compression_settings = compression_settings
+        self.__metadata = copy.deepcopy(_METADATA)
         if appname:
             self.__metadata['application'] = {'name': appname}
+
+        # Combine the "driver" MongoClient option with PyMongo's info, like:
+        # {
+        #    'driver': {
+        #        'name': 'PyMongo|MyDriver',
+        #        'version': '3.7.0|1.2.3',
+        #    },
+        #    'platform': 'CPython 3.6.0|MyPlatform'
+        # }
+        if driver:
+            if driver.name:
+                self.__metadata['driver']['name'] = "%s|%s" % (
+                    _METADATA['driver']['name'], driver.name)
+            if driver.version:
+                self.__metadata['driver']['version'] = "%s|%s" % (
+                    _METADATA['driver']['version'], driver.version)
+            if driver.platform:
+                self.__metadata['platform'] = "%s|%s" % (
+                    _METADATA['platform'], driver.platform)
 
     @property
     def max_pool_size(self):
@@ -265,12 +361,12 @@ class PoolOptions(object):
         return self.__min_pool_size
 
     @property
-    def max_idle_time_ms(self):
-        """The maximum number of milliseconds that a connection can remain
+    def max_idle_time_seconds(self):
+        """The maximum number of seconds that a connection can remain
         idle in the pool before being removed and replaced. Defaults to
         `None` (no limit).
         """
-        return self.__max_idle_time_ms
+        return self.__max_idle_time_seconds
 
     @property
     def connect_timeout(self):
@@ -330,6 +426,16 @@ class PoolOptions(object):
         return self.__appname
 
     @property
+    def driver(self):
+        """Driver name and version, for sending with ismaster in handshake.
+        """
+        return self.__driver
+
+    @property
+    def compression_settings(self):
+        return self.__compression_settings
+
+    @property
     def metadata(self):
         """A dict of metadata about the application, driver, os, and platform.
         """
@@ -342,43 +448,72 @@ class SocketInfo(object):
     :Parameters:
       - `sock`: a raw socket object
       - `pool`: a Pool instance
-      - `ismaster`: optional IsMaster instance, response to ismaster on `sock`
       - `address`: the server's (host, port)
     """
-    def __init__(self, sock, pool, ismaster, address):
+    def __init__(self, sock, pool, address):
         self.sock = sock
         self.address = address
         self.authset = set()
         self.closed = False
-        self.last_checkout = _time()
-        self.is_writable = ismaster.is_writable if ismaster else None
-        self.max_wire_version = ismaster.max_wire_version if ismaster else None
-        self.max_bson_size = ismaster.max_bson_size if ismaster else None
-        self.max_message_size = (
-            ismaster.max_message_size if ismaster else MAX_MESSAGE_SIZE)
-        self.max_write_batch_size = (
-            ismaster.max_write_batch_size if ismaster else None)
-
+        self.last_checkin_time = _time()
+        self.performed_handshake = False
+        self.is_writable = False
+        self.max_wire_version = MAX_WIRE_VERSION
+        self.max_bson_size = MAX_BSON_SIZE
+        self.max_message_size = MAX_MESSAGE_SIZE
+        self.max_write_batch_size = MAX_WRITE_BATCH_SIZE
+        self.supports_sessions = False
+        self.is_mongos = False
+        self.op_msg_enabled = False
         self.listeners = pool.opts.event_listeners
-
-        if ismaster:
-            self.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
-        else:
-            self.is_mongos = None
+        self.compression_settings = pool.opts.compression_settings
+        self.compression_context = None
 
         # The pool's pool_id changes with each reset() so we can close sockets
         # created before the last reset.
         self.pool_id = pool.pool_id
 
+    def ismaster(self, metadata, cluster_time):
+        cmd = SON([('ismaster', 1)])
+        if not self.performed_handshake:
+            cmd['client'] = metadata
+            if self.compression_settings:
+                cmd['compression'] = self.compression_settings.compressors
+
+        if self.max_wire_version >= 6 and cluster_time is not None:
+            cmd['$clusterTime'] = cluster_time
+
+        ismaster = IsMaster(self.command('admin', cmd, publish_events=False))
+        self.is_writable = ismaster.is_writable
+        self.max_wire_version = ismaster.max_wire_version
+        self.max_bson_size = ismaster.max_bson_size
+        self.max_message_size = ismaster.max_message_size
+        self.max_write_batch_size = ismaster.max_write_batch_size
+        self.supports_sessions = (
+            ismaster.logical_session_timeout_minutes is not None)
+        self.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
+        if not self.performed_handshake and self.compression_settings:
+            ctx = self.compression_settings.get_compression_context(
+                ismaster.compressors)
+            self.compression_context = ctx
+
+        self.performed_handshake = True
+        self.op_msg_enabled = ismaster.max_wire_version >= 6
+        return ismaster
+
     def command(self, dbname, spec, slave_ok=False,
                 read_preference=ReadPreference.PRIMARY,
                 codec_options=DEFAULT_CODEC_OPTIONS, check=True,
                 allowable_errors=None, check_keys=False,
-                read_concern=DEFAULT_READ_CONCERN,
+                read_concern=None,
                 write_concern=None,
                 parse_write_concern_error=False,
-                collation=None):
-        """Execute a command or raise ConnectionFailure or OperationFailure.
+                collation=None,
+                session=None,
+                client=None,
+                retryable_write=False,
+                publish_events=True):
+        """Execute a command or raise an error.
 
         :Parameters:
           - `dbname`: name of the database on which to run the command
@@ -394,8 +529,20 @@ class SocketInfo(object):
           - `parse_write_concern_error`: Whether to parse the
             ``writeConcernError`` field in the command response.
           - `collation`: The collation for this command.
+          - `session`: optional ClientSession instance.
+          - `client`: optional MongoClient for gossipping $clusterTime.
+          - `retryable_write`: True if this command is a retryable write.
+          - `publish_events`: Should we publish events for this command?
         """
-        if self.max_wire_version < 4 and not read_concern.ok_for_legacy:
+        self.validate_session(client, session)
+        session = _validate_session_write_concern(session, write_concern)
+
+        # Ensure command name remains in first place.
+        if not isinstance(spec, ORDERED_TYPES):
+            spec = SON(spec)
+
+        if (read_concern and self.max_wire_version < 4
+                and not read_concern.ok_for_legacy):
             raise ConfigurationError(
                 'read concern level of %s is not valid '
                 'with a max wire version of %d.'
@@ -404,19 +551,32 @@ class SocketInfo(object):
                 collation is None):
             raise ConfigurationError(
                 'Collation is unsupported for unacknowledged writes.')
-        if self.max_wire_version >= 5 and write_concern:
+        if (self.max_wire_version >= 5 and
+                write_concern and
+                not write_concern.is_server_default):
             spec['writeConcern'] = write_concern.document
         elif self.max_wire_version < 5 and collation is not None:
             raise ConfigurationError(
                 'Must be connected to MongoDB 3.4+ to use a collation.')
+
+        if session:
+            session._apply_to(spec, retryable_write, read_preference)
+        self.send_cluster_time(spec, session, client)
+        listeners = self.listeners if publish_events else None
+        unacknowledged = write_concern and not write_concern.acknowledged
+        if self.op_msg_enabled:
+            self._raise_if_not_writable(unacknowledged)
         try:
             return command(self.sock, dbname, spec, slave_ok,
                            self.is_mongos, read_preference, codec_options,
-                           check, allowable_errors, self.address,
-                           check_keys, self.listeners, self.max_bson_size,
-                           read_concern,
+                           session, client, check, allowable_errors,
+                           self.address, check_keys, listeners,
+                           self.max_bson_size, read_concern,
                            parse_write_concern_error=parse_write_concern_error,
-                           collation=collation)
+                           collation=collation,
+                           compression_ctx=self.compression_context,
+                           use_op_msg=self.op_msg_enabled,
+                           unacknowledged=unacknowledged)
         except OperationFailure:
             raise
         # Catch socket.error, KeyboardInterrupt, etc. and close ourselves.
@@ -440,16 +600,24 @@ class SocketInfo(object):
         except BaseException as error:
             self._raise_connection_failure(error)
 
-    def receive_message(self, operation, request_id):
+    def receive_message(self, request_id):
         """Receive a raw BSON message or raise ConnectionFailure.
 
         If any exception is raised, the socket is closed.
         """
         try:
-            return receive_message(
-                self.sock, operation, request_id, self.max_message_size)
+            return receive_message(self.sock, request_id,
+                                   self.max_message_size)
         except BaseException as error:
             self._raise_connection_failure(error)
+
+    def _raise_if_not_writable(self, unacknowledged):
+        """Raise NotMasterError on unacknowledged write if this socket is not
+        writable.
+        """
+        if unacknowledged and not self.is_writable:
+            # Write won't succeed, bail as if we'd received a not master error.
+            raise NotMasterError("not master")
 
     def legacy_write(self, request_id, msg, max_doc_size, with_last_error):
         """Send OP_INSERT, etc., optionally returning response as a dict.
@@ -463,14 +631,12 @@ class SocketInfo(object):
           - `max_doc_size`: size in bytes of the largest document in `msg`.
           - `with_last_error`: True if a getlasterror command is appended.
         """
-        if not with_last_error and not self.is_writable:
-            # Write won't succeed, bail as if we'd done a getlasterror.
-            raise NotMasterError("not master")
+        self._raise_if_not_writable(not with_last_error)
 
         self.send_message(msg, max_doc_size)
         if with_last_error:
-            response = self.receive_message(1, request_id)
-            return helpers._check_gle_response(response)
+            reply = self.receive_message(request_id)
+            return helpers._check_gle_response(reply.command_response())
 
     def write_command(self, request_id, msg):
         """Send "insert" etc. command, returning response as a dict.
@@ -482,9 +648,8 @@ class SocketInfo(object):
           - `msg`: bytes, the command message.
         """
         self.send_message(msg, 0)
-        response = helpers._unpack_response(self.receive_message(1, request_id))
-        assert response['number_returned'] == 1
-        result = response['data'][0]
+        reply = self.receive_message(request_id)
+        result = reply.command_response()
 
         # Raises NotMasterError or OperationFailure.
         helpers._check_command_response(result)
@@ -523,13 +688,41 @@ class SocketInfo(object):
         auth.authenticate(credentials, self)
         self.authset.add(credentials)
 
+    def validate_session(self, client, session):
+        """Validate this session before use with client.
+
+        Raises error if this session is logged in as a different user or
+        the client is not the one that created the session.
+        """
+        if session:
+            if session._client is not client:
+                raise InvalidOperation(
+                    'Can only use session with the MongoClient that'
+                    ' started it')
+            if session._authset != self.authset:
+                raise InvalidOperation(
+                    'Cannot use session after authenticating with different'
+                    ' credentials')
+
     def close(self):
         self.closed = True
         # Avoid exceptions on interpreter shutdown.
         try:
             self.sock.close()
-        except:
+        except Exception:
             pass
+
+    def send_cluster_time(self, command, session, client):
+        """Add cluster time for MongoDB >= 3.6."""
+        if self.max_wire_version >= 6 and client:
+            client._send_cluster_time(command, session)
+
+    def update_last_checkin_time(self):
+        self.last_checkin_time = _time()
+
+    def idle_time_seconds(self):
+        """Seconds since this socket was last checked into its pool."""
+        return _time() - self.last_checkin_time
 
     def _raise_connection_failure(self, error):
         # Catch *all* exceptions from socket methods and close the socket. In
@@ -619,6 +812,8 @@ def _create_connection(address, options):
             sock.settimeout(options.connect_timeout)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE,
                             options.socket_keepalive)
+            if options.socket_keepalive:
+                _set_keepalive_times(sock)
             sock.connect(sa)
             return sock
         except socket.error as e:
@@ -633,6 +828,9 @@ def _create_connection(address, options):
         # support IPv6. The test case is Jython2.5.1 which doesn't
         # support IPv6 at all.
         raise socket.error('getaddrinfo failed')
+
+
+_PY37PLUS = sys.version_info[:2] >= (3, 7)
 
 
 def _configured_socket(address, options):
@@ -650,14 +848,29 @@ def _configured_socket(address, options):
         try:
             # According to RFC6066, section 3, IPv4 and IPv6 literals are
             # not permitted for SNI hostname.
-            if _HAVE_SNI and not is_ip_address(host):
+            # Previous to Python 3.7 wrap_socket would blindly pass
+            # IP addresses as SNI hostname.
+            # https://bugs.python.org/issue32185
+            # We have to pass hostname / ip address to wrap_socket
+            # to use SSLContext.check_hostname.
+            if _HAVE_SNI and (not is_ip_address(host) or _PY37PLUS):
                 sock = ssl_context.wrap_socket(sock, server_hostname=host)
             else:
                 sock = ssl_context.wrap_socket(sock)
+        except _SSLCertificateError:
+            sock.close()
+            # Raise CertificateError directly like we do after match_hostname
+            # below.
+            raise
         except IOError as exc:
             sock.close()
-            raise ConnectionFailure("SSL handshake failed: %s" % (str(exc),))
-        if ssl_context.verify_mode and options.ssl_match_hostname:
+            # We raise AutoReconnect for transient and permanent SSL handshake
+            # failures alike. Permanent handshake failures, like protocol
+            # mismatch, will be turned into ServerSelectionTimeoutErrors later.
+            _raise_connection_failure(address, exc, "SSL handshake failed: ")
+        if (ssl_context.verify_mode and not
+                getattr(ssl_context, "check_hostname", False) and
+                options.ssl_match_hostname):
             try:
                 match_hostname(sock.getpeercert(), hostname=host)
             except CertificateError:
@@ -716,19 +929,31 @@ class Pool:
             sock_info.close()
 
     def remove_stale_sockets(self):
-        with self.lock:
-            if self.opts.max_idle_time_ms is not None:
+        """Removes stale sockets then adds new ones if pool is too small."""
+        if self.opts.max_idle_time_seconds is not None:
+            with self.lock:
                 for sock_info in self.sockets.copy():
-                    age = _time() - sock_info.last_checkout
-                    if age > self.opts.max_idle_time_ms:
+                    if (sock_info.idle_time_seconds() >
+                            self.opts.max_idle_time_seconds):
                         self.sockets.remove(sock_info)
                         sock_info.close()
 
-        while len(
-                self.sockets) + self.active_sockets < self.opts.min_pool_size:
-            sock_info = self.connect()
+        while True:
             with self.lock:
-                self.sockets.add(sock_info)
+                if (len(self.sockets) + self.active_sockets >=
+                        self.opts.min_pool_size):
+                    # There are enough sockets in the pool.
+                    break
+
+            # We must acquire the semaphore to respect max_pool_size.
+            if not self._socket_semaphore.acquire(False):
+                break
+            try:
+                sock_info = self.connect()
+                with self.lock:
+                    self.sockets.add(sock_info)
+            finally:
+                self._socket_semaphore.release()
 
     def connect(self):
         """Connect to Mongo and return a new SocketInfo.
@@ -741,26 +966,15 @@ class Pool:
         sock = None
         try:
             sock = _configured_socket(self.address, self.opts)
-            if self.handshake:
-                cmd = SON([
-                    ('ismaster', 1),
-                    ('client', self.opts.metadata)
-                ])
-                ismaster = IsMaster(
-                    command(sock,
-                            'admin',
-                            cmd,
-                            False,
-                            False,
-                            ReadPreference.PRIMARY,
-                            DEFAULT_CODEC_OPTIONS))
-            else:
-                ismaster = None
-            return SocketInfo(sock, self, ismaster, self.address)
         except socket.error as error:
             if sock is not None:
                 sock.close()
             _raise_connection_failure(self.address, error)
+
+        sock_info = SocketInfo(sock, self, self.address)
+        if self.handshake:
+            sock_info.ismaster(self.opts.metadata, None)
+        return sock_info
 
     @contextlib.contextmanager
     def get_socket(self, all_credentials, checkout=False):
@@ -820,28 +1034,20 @@ class Pool:
                 # set.pop() isn't atomic in Jython less than 2.7, see
                 # http://bugs.jython.org/issue1854
                 with self.lock:
-                    sock_info, from_pool = self.sockets.pop(), True
+                    # Can raise ConnectionFailure.
+                    sock_info = self.sockets.pop()
             except KeyError:
                 # Can raise ConnectionFailure or CertificateError.
-                sock_info, from_pool = self.connect(), False
-            # If socket is idle, open a new one.
-            if self.opts.max_idle_time_ms is not None:
-                age = _time() - sock_info.last_checkout
-                if age > self.opts.max_idle_time_ms:
-                    sock_info.close()
-                    sock_info, from_pool = self.connect(), False
-
-            if from_pool:
+                sock_info = self.connect()
+            else:
                 # Can raise ConnectionFailure.
                 sock_info = self._check(sock_info)
-
         except:
             self._socket_semaphore.release()
             with self.lock:
                 self.active_sockets -= 1
             raise
 
-        sock_info.last_checkout = _time()
         return sock_info
 
     def return_socket(self, sock_info):
@@ -852,6 +1058,7 @@ class Pool:
             if sock_info.pool_id != self.pool_id:
                 sock_info.close()
             elif not sock_info.closed:
+                sock_info.update_last_checkin_time()
                 with self.lock:
                     self.sockets.add(sock_info)
 
@@ -860,34 +1067,34 @@ class Pool:
             self.active_sockets -= 1
 
     def _check(self, sock_info):
-        """This side-effecty function checks if this pool has been reset since
-        the last time this socket was used, or if the socket has been closed by
-        some external network error, and if so, attempts to create a new socket.
-        If this connection attempt fails we reset the pool and reraise the
+        """This side-effecty function checks if this socket has been idle for
+        for longer than the max idle time, or if the socket has been closed by
+        some external network error, and if so, attempts to create a new
+        socket. If this connection attempt fails we raise the
         ConnectionFailure.
 
         Checking sockets lets us avoid seeing *some*
         :class:`~pymongo.errors.AutoReconnect` exceptions on server
-        hiccups, etc. We only do this if it's been > 1 second since
-        the last socket checkout, to keep performance reasonable - we
-        can't avoid AutoReconnects completely anyway.
+        hiccups, etc. We only check if the socket was closed by an external
+        error if it has been > 1 second since the socket was checked into the
+        pool, to keep performance reasonable - we can't avoid AutoReconnects
+        completely anyway.
         """
-        error = False
+        idle_time_seconds = sock_info.idle_time_seconds()
+        # If socket is idle, open a new one.
+        if (self.opts.max_idle_time_seconds is not None and
+                idle_time_seconds > self.opts.max_idle_time_seconds):
+            sock_info.close()
+            return self.connect()
 
-        # How long since socket was last checked out.
-        age = _time() - sock_info.last_checkout
-        if (self._check_interval_seconds is not None
-                and (
-                    0 == self._check_interval_seconds
-                    or age > self._check_interval_seconds)):
+        if (self._check_interval_seconds is not None and (
+                0 == self._check_interval_seconds or
+                idle_time_seconds > self._check_interval_seconds)):
             if self.socket_checker.socket_closed(sock_info.sock):
                 sock_info.close()
-                error = True
+                return self.connect()
 
-        if not error:
-            return sock_info
-        else:
-            return self.connect()
+        return sock_info
 
     def _raise_wait_queue_timeout(self):
         raise ConnectionFailure(

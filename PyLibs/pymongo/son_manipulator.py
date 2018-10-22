@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2009-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Manipulators that can edit SON objects as they enter and exit a database.
+"""**DEPRECATED**: Manipulators that can edit SON objects as they enter and exit
+a database.
 
-New manipulators should be defined as subclasses of SONManipulator and can be
-installed on a database by calling
-`pymongo.database.Database.add_son_manipulator`."""
+The :class:`~pymongo.son_manipulator.SONManipulator` API has limitations as a
+technique for transforming your data. Instead, it is more flexible and
+straightforward to transform outgoing documents in your own code before passing
+them to PyMongo, and transform incoming documents after receiving them from
+PyMongo. SON Manipulators will be removed from PyMongo in 4.0.
 
-import collections
+PyMongo does **not** apply SON manipulators to documents passed to
+the modern methods :meth:`~pymongo.collection.Collection.bulk_write`,
+:meth:`~pymongo.collection.Collection.insert_one`,
+:meth:`~pymongo.collection.Collection.insert_many`,
+:meth:`~pymongo.collection.Collection.update_one`, or
+:meth:`~pymongo.collection.Collection.update_many`. SON manipulators are
+**not** applied to documents returned by the modern methods
+:meth:`~pymongo.collection.Collection.find_one_and_delete`,
+:meth:`~pymongo.collection.Collection.find_one_and_replace`, and
+:meth:`~pymongo.collection.Collection.find_one_and_update`.
+"""
 
 from bson.dbref import DBRef
 from bson.objectid import ObjectId
+from bson.py3compat import abc
 from bson.son import SON
 
 
@@ -140,7 +154,7 @@ class AutoReference(SONManipulator):
         """
 
         def transform_value(value):
-            if isinstance(value, collections.MutableMapping):
+            if isinstance(value, abc.MutableMapping):
                 if "_id" in value and "_ns" in value:
                     return DBRef(value["_ns"], transform_value(value["_id"]))
                 else:
@@ -165,7 +179,7 @@ class AutoReference(SONManipulator):
                 return self.database.dereference(value)
             elif isinstance(value, list):
                 return [transform_value(v) for v in value]
-            elif isinstance(value, collections.MutableMapping):
+            elif isinstance(value, abc.MutableMapping):
                 return transform_dict(SON(value))
             return value
 
@@ -175,9 +189,3 @@ class AutoReference(SONManipulator):
             return object
 
         return transform_dict(SON(son))
-
-# TODO make a generic translator for custom types. Take encode, decode,
-# should_encode and should_decode functions and just encode and decode where
-# necessary. See examples/custom_type.py for where this would be useful.
-# Alternatively it could take a should_encode, to_binary, from_binary and
-# binary subtype.

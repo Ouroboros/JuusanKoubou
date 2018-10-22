@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2009-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,8 +20,7 @@ The :mod:`gridfs` package is an implementation of GridFS on top of
 .. mongodoc:: gridfs
 """
 
-from collections import Mapping
-
+from bson.py3compat import abc
 from gridfs.errors import NoFile
 from gridfs.grid_file import (GridIn,
                               GridOut,
@@ -37,7 +36,7 @@ from pymongo.errors import ConfigurationError, OperationFailure
 class GridFS(object):
     """An instance of GridFS on top of a single Database.
     """
-    def __init__(self, database, collection="fs"):
+    def __init__(self, database, collection="fs", disable_md5=False):
         """Create a new instance of :class:`GridFS`.
 
         Raises :class:`TypeError` if `database` is not an instance of
@@ -46,6 +45,9 @@ class GridFS(object):
         :Parameters:
           - `database`: database to use
           - `collection` (optional): root collection to use
+          - `disable_md5` (optional): When True, MD5 checksums will not be
+            computed for uploaded files. Useful in environments where MD5
+            cannot be used for regulatory or other reasons. Defaults to False.
 
         .. versionchanged:: 3.1
            Indexes are only ensured on the first write to the DB.
@@ -67,6 +69,7 @@ class GridFS(object):
         self.__collection = database[collection]
         self.__files = self.__collection.files
         self.__chunks = self.__collection.chunks
+        self.__disable_md5 = disable_md5
 
     def new_file(self, **kwargs):
         """Create a new file in GridFS.
@@ -84,7 +87,8 @@ class GridFS(object):
         """
         # No need for __ensure_index_files_id() here; GridIn ensures
         # the (files_id, n) index when needed.
-        return GridIn(self.__collection, **kwargs)
+        return GridIn(
+            self.__collection, disable_md5=self.__disable_md5, **kwargs)
 
     def put(self, data, **kwargs):
         """Put data in GridFS as a new file.
@@ -117,7 +121,8 @@ class GridFS(object):
         .. versionchanged:: 3.0
            w=0 writes to GridFS are now prohibited.
         """
-        grid_file = GridIn(self.__collection, **kwargs)
+        grid_file = GridIn(
+            self.__collection, disable_md5=self.__disable_md5, **kwargs)
         try:
             grid_file.write(data)
         finally:
@@ -125,7 +130,7 @@ class GridFS(object):
 
         return grid_file._id
 
-    def get(self, file_id):
+    def get(self, file_id, session=None):
         """Get a file from GridFS by ``"_id"``.
 
         Returns an instance of :class:`~gridfs.grid_file.GridOut`,
@@ -133,14 +138,19 @@ class GridFS(object):
 
         :Parameters:
           - `file_id`: ``"_id"`` of the file to get
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        gout = GridOut(self.__collection, file_id)
+        gout = GridOut(self.__collection, file_id, session=session)
 
         # Raise NoFile now, instead of on first attribute access.
         gout._ensure_file()
         return gout
 
-    def get_version(self, filename=None, version=-1, **kwargs):
+    def get_version(self, filename=None, version=-1, session=None, **kwargs):
         """Get a file from GridFS by ``"filename"`` or metadata fields.
 
         Returns a version of the file in GridFS whose filename matches
@@ -165,7 +175,12 @@ class GridFS(object):
           - `filename`: ``"filename"`` of the file to get, or `None`
           - `version` (optional): version of the file to get (defaults
             to -1, the most recent version uploaded)
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
           - `**kwargs` (optional): find files by custom metadata.
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
 
         .. versionchanged:: 3.1
            ``get_version`` no longer ensures indexes.
@@ -174,19 +189,20 @@ class GridFS(object):
         if filename is not None:
             query["filename"] = filename
 
-        cursor = self.__files.find(query)
+        cursor = self.__files.find(query, session=session)
         if version < 0:
             skip = abs(version) - 1
             cursor.limit(-1).skip(skip).sort("uploadDate", DESCENDING)
         else:
             cursor.limit(-1).skip(version).sort("uploadDate", ASCENDING)
         try:
-            grid_file = next(cursor)
-            return GridOut(self.__collection, file_document=grid_file)
+            doc = next(cursor)
+            return GridOut(
+                self.__collection, file_document=doc, session=session)
         except StopIteration:
             raise NoFile("no version %d for filename %r" % (version, filename))
 
-    def get_last_version(self, filename=None, **kwargs):
+    def get_last_version(self, filename=None, session=None, **kwargs):
         """Get the most recent version of a file in GridFS by ``"filename"``
         or metadata fields.
 
@@ -195,12 +211,17 @@ class GridFS(object):
 
         :Parameters:
           - `filename`: ``"filename"`` of the file to get, or `None`
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
           - `**kwargs` (optional): find files by custom metadata.
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        return self.get_version(filename=filename, **kwargs)
+        return self.get_version(filename=filename, session=session, **kwargs)
 
     # TODO add optional safe mode for chunk removal?
-    def delete(self, file_id):
+    def delete(self, file_id, session=None):
         """Delete a file from GridFS by ``"_id"``.
 
         Deletes all data belonging to the file with ``"_id"``:
@@ -216,16 +237,28 @@ class GridFS(object):
 
         :Parameters:
           - `file_id`: ``"_id"`` of the file to delete
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
 
         .. versionchanged:: 3.1
            ``delete`` no longer ensures indexes.
         """
-        self.__files.delete_one({"_id": file_id})
-        self.__chunks.delete_many({"files_id": file_id})
+        self.__files.delete_one({"_id": file_id}, session=session)
+        self.__chunks.delete_many({"files_id": file_id}, session=session)
 
-    def list(self):
+    def list(self, session=None):
         """List the names of all files stored in this instance of
         :class:`GridFS`.
+
+        :Parameters:
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
 
         .. versionchanged:: 3.1
            ``list`` no longer ensures indexes.
@@ -233,10 +266,10 @@ class GridFS(object):
         # With an index, distinct includes documents with no filename
         # as None.
         return [
-            name for name in self.__files.distinct("filename")
+            name for name in self.__files.distinct("filename", session=session)
             if name is not None]
 
-    def find_one(self, filter=None, *args, **kwargs):
+    def find_one(self, filter=None, session=None, *args, **kwargs):
         """Get a single file from gridfs.
 
         All arguments to :meth:`find` are also valid arguments for
@@ -252,13 +285,18 @@ class GridFS(object):
             the value for a query for ``"_id"`` in the file collection.
           - `*args` (optional): any additional positional arguments are
             the same as the arguments to :meth:`find`.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
           - `**kwargs` (optional): any additional keyword arguments
             are the same as the arguments to :meth:`find`.
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        if filter is not None and not isinstance(filter, Mapping):
+        if filter is not None and not isinstance(filter, abc.Mapping):
             filter = {"_id": filter}
 
-        for f in self.find(filter, *args, **kwargs):
+        for f in self.find(filter, *args, session=session, **kwargs):
             return f
 
         return None
@@ -290,6 +328,10 @@ class GridFS(object):
         :meth:`~pymongo.collection.Collection.find`
         in :class:`~pymongo.collection.Collection`.
 
+        If a :class:`~pymongo.client_session.ClientSession` is passed to
+        :meth:`find`, all returned :class:`~gridfs.grid_file.GridOut` instances
+        are associated with that session.
+
         :Parameters:
           - `filter` (optional): a SON object specifying elements which
             must be present for a document to be included in the
@@ -320,7 +362,7 @@ class GridFS(object):
         """
         return GridOutCursor(self.__collection, *args, **kwargs)
 
-    def exists(self, document_or_id=None, **kwargs):
+    def exists(self, document_or_id=None, session=None, **kwargs):
         """Check if a file exists in this instance of :class:`GridFS`.
 
         The file to check for can be specified by the value of its
@@ -350,12 +392,20 @@ class GridFS(object):
         :Parameters:
           - `document_or_id` (optional): query document, or _id of the
             document to check for
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
           - `**kwargs` (optional): keyword arguments are used as a
             query document, if they're present.
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         if kwargs:
-            return self.__files.find_one(kwargs, ["_id"]) is not None
-        return self.__files.find_one(document_or_id, ["_id"]) is not None
+            f = self.__files.find_one(kwargs, ["_id"], session=session)
+        else:
+            f = self.__files.find_one(document_or_id, ["_id"], session=session)
+
+        return f is not None
 
 
 class GridFSBucket(object):
@@ -363,7 +413,7 @@ class GridFSBucket(object):
 
     def __init__(self, db, bucket_name="fs",
                  chunk_size_bytes=DEFAULT_CHUNK_SIZE, write_concern=None,
-                 read_preference=None):
+                 read_preference=None, disable_md5=False):
         """Create a new instance of :class:`GridFSBucket`.
 
         Raises :exc:`TypeError` if `database` is not an instance of
@@ -382,6 +432,9 @@ class GridFSBucket(object):
             (the default) db.write_concern is used.
           - `read_preference` (optional): The read preference to use. If
             ``None`` (the default) db.read_preference is used.
+          - `disable_md5` (optional): When True, MD5 checksums will not be
+            computed for uploaded files. Useful in environments where MD5
+            cannot be used for regulatory or other reasons. Defaults to False.
 
         .. versionadded:: 3.1
 
@@ -397,6 +450,7 @@ class GridFSBucket(object):
         self._db = db
         self._bucket_name = bucket_name
         self._collection = db[bucket_name]
+        self._disable_md5 = disable_md5
 
         self._chunks = self._collection.chunks.with_options(
             write_concern=write_concern,
@@ -409,7 +463,7 @@ class GridFSBucket(object):
         self._chunk_size_bytes = chunk_size_bytes
 
     def open_upload_stream(self, filename, chunk_size_bytes=None,
-                           metadata=None):
+                           metadata=None, session=None):
         """Opens a Stream that the application can write the contents of the
         file to.
 
@@ -420,7 +474,7 @@ class GridFSBucket(object):
 
           my_db = MongoClient().test
           fs = GridFSBucket(my_db)
-          grid_in, file_id = fs.open_upload_stream(
+          grid_in = fs.open_upload_stream(
                 "test_file", chunk_size_bytes=4,
                 metadata={"contentType": "text/plain"})
           grid_in.write("data I want to store!")
@@ -439,6 +493,11 @@ class GridFSBucket(object):
           - `metadata` (optional): User data for the 'metadata' field of the
             files collection document. If not provided the metadata field will
             be omitted from the files collection document.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         validate_string("filename", filename)
 
@@ -448,10 +507,15 @@ class GridFSBucket(object):
         if metadata is not None:
             opts["metadata"] = metadata
 
-        return GridIn(self._collection, **opts)
+        return GridIn(
+            self._collection,
+            session=session,
+            disable_md5=self._disable_md5,
+            **opts)
 
     def open_upload_stream_with_id(
-            self, file_id, filename, chunk_size_bytes=None, metadata=None):
+            self, file_id, filename, chunk_size_bytes=None, metadata=None,
+            session=None):
         """Opens a Stream that the application can write the contents of the
         file to.
 
@@ -462,7 +526,7 @@ class GridFSBucket(object):
 
           my_db = MongoClient().test
           fs = GridFSBucket(my_db)
-          grid_in, file_id = fs.open_upload_stream(
+          grid_in = fs.open_upload_stream_with_id(
                 ObjectId(),
                 "test_file",
                 chunk_size_bytes=4,
@@ -485,6 +549,11 @@ class GridFSBucket(object):
           - `metadata` (optional): User data for the 'metadata' field of the
             files collection document. If not provided the metadata field will
             be omitted from the files collection document.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         validate_string("filename", filename)
 
@@ -495,10 +564,14 @@ class GridFSBucket(object):
         if metadata is not None:
             opts["metadata"] = metadata
 
-        return GridIn(self._collection, **opts)
+        return GridIn(
+            self._collection,
+            session=session,
+            disable_md5=self._disable_md5,
+            **opts)
 
     def upload_from_stream(self, filename, source, chunk_size_bytes=None,
-                           metadata=None):
+                           metadata=None, session=None):
         """Uploads a user file to a GridFS bucket.
 
         Reads the contents of the user file from `source` and uploads
@@ -528,15 +601,21 @@ class GridFSBucket(object):
           - `metadata` (optional): User data for the 'metadata' field of the
             files collection document. If not provided the metadata field will
             be omitted from the files collection document.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         with self.open_upload_stream(
-                filename, chunk_size_bytes, metadata) as gin:
+                filename, chunk_size_bytes, metadata, session=session) as gin:
             gin.write(source)
 
         return gin._id
 
     def upload_from_stream_with_id(self, file_id, filename, source,
-                                   chunk_size_bytes=None, metadata=None):
+                                   chunk_size_bytes=None, metadata=None,
+                                   session=None):
         """Uploads a user file to a GridFS bucket with a custom file id.
 
         Reads the contents of the user file from `source` and uploads
@@ -567,12 +646,18 @@ class GridFSBucket(object):
           - `metadata` (optional): User data for the 'metadata' field of the
             files collection document. If not provided the metadata field will
             be omitted from the files collection document.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         with self.open_upload_stream_with_id(
-                file_id, filename, chunk_size_bytes, metadata) as gin:
+                file_id, filename, chunk_size_bytes, metadata,
+                session=session) as gin:
             gin.write(source)
 
-    def open_download_stream(self, file_id):
+    def open_download_stream(self, file_id, session=None):
         """Opens a Stream from which the application can read the contents of
         the stored file specified by file_id.
 
@@ -591,14 +676,19 @@ class GridFSBucket(object):
 
         :Parameters:
           - `file_id`: The _id of the file to be downloaded.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        gout = GridOut(self._collection, file_id)
+        gout = GridOut(self._collection, file_id, session=session)
 
         # Raise NoFile now, instead of on first attribute access.
         gout._ensure_file()
         return gout
 
-    def download_to_stream(self, file_id, destination):
+    def download_to_stream(self, file_id, destination, session=None):
         """Downloads the contents of the stored file specified by file_id and
         writes the contents to `destination`.
 
@@ -619,12 +709,17 @@ class GridFSBucket(object):
         :Parameters:
           - `file_id`: The _id of the file to be downloaded.
           - `destination`: a file-like object implementing :meth:`write`.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        gout = self.open_download_stream(file_id)
+        gout = self.open_download_stream(file_id, session=session)
         for chunk in gout:
             destination.write(chunk)
 
-    def delete(self, file_id):
+    def delete(self, file_id, session=None):
         """Given an file_id, delete this stored file's files collection document
         and associated chunks from a GridFS bucket.
 
@@ -640,9 +735,14 @@ class GridFSBucket(object):
 
         :Parameters:
           - `file_id`: The _id of the file to be deleted.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        res = self._files.delete_one({"_id": file_id})
-        self._chunks.delete_many({"files_id": file_id})
+        res = self._files.delete_one({"_id": file_id}, session=session)
+        self._chunks.delete_many({"files_id": file_id}, session=session)
         if not res.deleted_count:
             raise NoFile(
                 "no file could be deleted because none matched %s" % file_id)
@@ -676,6 +776,10 @@ class GridFSBucket(object):
         :meth:`~pymongo.collection.Collection.find`
         in :class:`~pymongo.collection.Collection`.
 
+        If a :class:`~pymongo.client_session.ClientSession` is passed to
+        :meth:`find`, all returned :class:`~gridfs.grid_file.GridOut` instances
+        are associated with that session.
+
         :Parameters:
           - `filter`: Search query.
           - `batch_size` (optional): The number of documents to return per
@@ -691,7 +795,7 @@ class GridFSBucket(object):
         """
         return GridOutCursor(self._collection, *args, **kwargs)
 
-    def open_download_stream_by_name(self, filename, revision=-1):
+    def open_download_stream_by_name(self, filename, revision=-1, session=None):
         """Opens a Stream from which the application can read the contents of
         `filename` and optional `revision`.
 
@@ -714,6 +818,8 @@ class GridFSBucket(object):
           - `revision` (optional): Which revision (documents with the same
             filename and different uploadDate) of the file to retrieve.
             Defaults to -1 (the most recent revision).
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
 
         :Note: Revision numbers are defined as follows:
 
@@ -723,12 +829,15 @@ class GridFSBucket(object):
           - etc...
           - -2 = the second most recent revision
           - -1 = the most recent revision
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         validate_string("filename", filename)
 
         query = {"filename": filename}
 
-        cursor = self._files.find(query)
+        cursor = self._files.find(query, session=session)
         if revision < 0:
             skip = abs(revision) - 1
             cursor.limit(-1).skip(skip).sort("uploadDate", DESCENDING)
@@ -736,12 +845,14 @@ class GridFSBucket(object):
             cursor.limit(-1).skip(revision).sort("uploadDate", ASCENDING)
         try:
             grid_file = next(cursor)
-            return GridOut(self._collection, file_document=grid_file)
+            return GridOut(
+                self._collection, file_document=grid_file, session=session)
         except StopIteration:
             raise NoFile(
                 "no version %d for filename %r" % (revision, filename))
 
-    def download_to_stream_by_name(self, filename, destination, revision=-1):
+    def download_to_stream_by_name(self, filename, destination, revision=-1,
+                                   session=None):
         """Write the contents of `filename` (with optional `revision`) to
         `destination`.
 
@@ -764,6 +875,8 @@ class GridFSBucket(object):
           - `revision` (optional): Which revision (documents with the same
             filename and different uploadDate) of the file to retrieve.
             Defaults to -1 (the most recent revision).
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
 
         :Note: Revision numbers are defined as follows:
 
@@ -773,12 +886,16 @@ class GridFSBucket(object):
           - etc...
           - -2 = the second most recent revision
           - -1 = the most recent revision
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
-        gout = self.open_download_stream_by_name(filename, revision)
+        gout = self.open_download_stream_by_name(
+            filename, revision, session=session)
         for chunk in gout:
             destination.write(chunk)
 
-    def rename(self, file_id, new_filename):
+    def rename(self, file_id, new_filename, session=None):
         """Renames the stored file with the specified file_id.
 
         For example::
@@ -794,9 +911,15 @@ class GridFSBucket(object):
         :Parameters:
           - `file_id`: The _id of the file to be renamed.
           - `new_filename`: The new name of the file.
+          - `session` (optional): a
+            :class:`~pymongo.client_session.ClientSession`
+
+        .. versionchanged:: 3.6
+           Added ``session`` parameter.
         """
         result = self._files.update_one({"_id": file_id},
-                                        {"$set": {"filename": new_filename}})
+                                        {"$set": {"filename": new_filename}},
+                                        session=session)
         if not result.matched_count:
             raise NoFile("no files could be renamed %r because none "
                          "matched file_id %i" % (new_filename, file_id))

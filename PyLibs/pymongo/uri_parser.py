@@ -1,4 +1,4 @@
-# Copyright 2011-2015 MongoDB, Inc.
+# Copyright 2011-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -14,9 +14,16 @@
 
 
 """Tools to parse and validate a MongoDB URI."""
+import re
 import warnings
 
-from bson.py3compat import PY3, iteritems, string_type
+try:
+    from dns import resolver
+    _HAVE_DNSPYTHON = True
+except ImportError:
+    _HAVE_DNSPYTHON = False
+
+from bson.py3compat import PY3, string_type
 
 if PY3:
     from urllib.parse import unquote_plus
@@ -29,6 +36,8 @@ from pymongo.errors import ConfigurationError, InvalidURI
 
 SCHEME = 'mongodb://'
 SCHEME_LEN = len(SCHEME)
+SRV_SCHEME = 'mongodb+srv://'
+SRV_SCHEME_LEN = len(SRV_SCHEME)
 DEFAULT_PORT = 27017
 
 
@@ -68,7 +77,7 @@ def _rpartition(entity, sep):
 def parse_userinfo(userinfo):
     """Validates the format of user information in a MongoDB URI.
     Reserved characters like ':', '/', '+' and '@' must be escaped
-    following RFC 2396.
+    following RFC 3986.
 
     Returns a 2-tuple containing the unescaped username followed
     by the unescaped password.
@@ -80,16 +89,17 @@ def parse_userinfo(userinfo):
        Now uses `urllib.unquote_plus` so `+` characters must be escaped.
     """
     if '@' in userinfo or userinfo.count(':') > 1:
-        raise InvalidURI("':' or '@' characters in a username or password "
-                         "must be escaped according to RFC 2396.")
+        if PY3:
+            quote_fn = "urllib.parse.quote_plus"
+        else:
+            quote_fn = "urllib.quote_plus"
+        raise InvalidURI("Username and password must be escaped according to "
+                         "RFC 3986, use %s()." % quote_fn)
     user, _, passwd = _partition(userinfo, ":")
     # No password is expected with GSSAPI authentication.
     if not user:
         raise InvalidURI("The empty string is not valid username.")
-    user = unquote_plus(user)
-    passwd = unquote_plus(passwd)
-
-    return user, passwd
+    return unquote_plus(user), unquote_plus(passwd)
 
 
 def parse_ipv6_literal_host(entity, default_port):
@@ -251,6 +261,50 @@ def split_hosts(hosts, default_port=DEFAULT_PORT):
     return nodes
 
 
+# Prohibited characters in database name. DB names also can't have ".", but for
+# backward-compat we allow "db.collection" in URI.
+_BAD_DB_CHARS = re.compile('[' + re.escape(r'/ "$') + ']')
+
+
+if PY3:
+    # dnspython can return bytes or str from various parts
+    # of its API depending on version. We always want str.
+    def maybe_decode(text):
+        if isinstance(text, bytes):
+            return text.decode()
+        return text
+else:
+    def maybe_decode(text):
+        return text
+
+
+_ALLOWED_TXT_OPTS = frozenset(
+    ['authsource', 'authSource', 'replicaset', 'replicaSet'])
+
+
+def _get_dns_srv_hosts(hostname):
+    try:
+        results = resolver.query('_mongodb._tcp.' + hostname, 'SRV')
+    except Exception as exc:
+        raise ConfigurationError(str(exc))
+    return [(maybe_decode(res.target.to_text(omit_final_dot=True)), res.port)
+            for res in results]
+
+
+def _get_dns_txt_options(hostname):
+    try:
+        results = resolver.query(hostname, 'TXT')
+    except (resolver.NoAnswer, resolver.NXDOMAIN):
+        # No TXT records
+        return None
+    except Exception as exc:
+        raise ConfigurationError(str(exc))
+    if len(results) > 1:
+        raise ConfigurationError('Only one TXT record is supported')
+    return (
+        b'&'.join([b''.join(res.strings) for res in results])).decode('utf-8')
+
+
 def parse_uri(uri, default_port=DEFAULT_PORT, validate=True, warn=False):
     """Parse and validate a MongoDB URI.
 
@@ -265,6 +319,9 @@ def parse_uri(uri, default_port=DEFAULT_PORT, validate=True, warn=False):
             'options': <dict of MongoDB URI options>
         }
 
+    If the URI scheme is "mongodb+srv://" DNS SRV and TXT lookups will be done
+    to build nodelist and options.
+
     :Parameters:
         - `uri`: The MongoDB URI to parse.
         - `default_port`: The port number to use when one wasn't specified
@@ -276,14 +333,28 @@ def parse_uri(uri, default_port=DEFAULT_PORT, validate=True, warn=False):
           validation will error when options are unsupported or values are
           invalid.
 
+    .. versionchanged:: 3.6
+        Added support for mongodb+srv:// URIs
+
+    .. versionchanged:: 3.5
+        Return the original value of the ``readPreference`` MongoDB URI option
+        instead of the validated read preference mode.
+
     .. versionchanged:: 3.1
         ``warn`` added so invalid options can be ignored.
     """
-    if not uri.startswith(SCHEME):
-        raise InvalidURI("Invalid URI scheme: URI "
-                         "must begin with '%s'" % (SCHEME,))
-
-    scheme_free = uri[SCHEME_LEN:]
+    if uri.startswith(SCHEME):
+        is_srv = False
+        scheme_free = uri[SCHEME_LEN:]
+    elif uri.startswith(SRV_SCHEME):
+        if not _HAVE_DNSPYTHON:
+            raise ConfigurationError('The "dnspython" module must be '
+                                     'installed to use mongodb+srv:// URIs')
+        is_srv = True
+        scheme_free = uri[SRV_SCHEME_LEN:]
+    else:
+        raise InvalidURI("Invalid URI scheme: URI must "
+                         "begin with '%s' or '%s'" % (SCHEME, SRV_SCHEME))
 
     if not scheme_free:
         raise InvalidURI("Must provide at least one hostname or IP.")
@@ -294,19 +365,10 @@ def parse_uri(uri, default_port=DEFAULT_PORT, validate=True, warn=False):
     collection = None
     options = {}
 
-    # Check for unix domain sockets in the uri
-    if '.sock' in scheme_free:
-        host_part, _, path_part = _rpartition(scheme_free, '/')
-        if not host_part:
-            host_part = path_part
-            path_part = ""
-        if '/' in host_part:
-            raise InvalidURI("Any '/' in a unix domain socket must be"
-                             " URL encoded: %s" % host_part)
-        host_part = unquote_plus(host_part)
-        path_part = unquote_plus(path_part)
-    else:
-        host_part, _, path_part = _partition(scheme_free, '/')
+    host_part, _, path_part = _partition(scheme_free, '/')
+    if not host_part:
+        host_part = path_part
+        path_part = ""
 
     if not path_part and '?' in host_part:
         raise InvalidURI("A '/' is required between "
@@ -318,19 +380,62 @@ def parse_uri(uri, default_port=DEFAULT_PORT, validate=True, warn=False):
     else:
         hosts = host_part
 
-    nodes = split_hosts(hosts, default_port=default_port)
+    if '/' in hosts:
+        raise InvalidURI("Any '/' in a unix domain socket must be"
+                         " percent-encoded: %s" % host_part)
+
+    hosts = unquote_plus(hosts)
+
+    if is_srv:
+        nodes = split_hosts(hosts, default_port=None)
+        if len(nodes) != 1:
+            raise InvalidURI(
+                "%s URIs must include one, "
+                "and only one, hostname" % (SRV_SCHEME,))
+        fqdn, port = nodes[0]
+        if port is not None:
+            raise InvalidURI(
+                "%s URIs must not include a port number" % (SRV_SCHEME,))
+        nodes = _get_dns_srv_hosts(fqdn)
+
+        try:
+            plist = fqdn.split(".")[1:]
+        except Exception:
+            raise ConfigurationError("Invalid URI host")
+        slen = len(plist)
+        if slen < 2:
+            raise ConfigurationError("Invalid URI host")
+        for node in nodes:
+            try:
+                nlist = node[0].split(".")[1:][-slen:]
+            except Exception:
+                raise ConfigurationError("Invalid SRV host")
+            if plist != nlist:
+                raise ConfigurationError("Invalid SRV host")
+
+        dns_options = _get_dns_txt_options(fqdn)
+        if dns_options:
+            options = split_options(dns_options, validate, warn)
+            if set(options) - _ALLOWED_TXT_OPTS:
+                raise ConfigurationError(
+                    "Only authSource and replicaSet are supported from DNS")
+        options["ssl"] = True if validate else 'true'
+    else:
+        nodes = split_hosts(hosts, default_port=default_port)
 
     if path_part:
-
         if path_part[0] == '?':
-            opts = path_part[1:]
+            opts = unquote_plus(path_part[1:])
         else:
-            dbase, _, opts = _partition(path_part, '?')
+            dbase, _, opts = map(unquote_plus, _partition(path_part, '?'))
             if '.' in dbase:
                 dbase, collection = dbase.split('.', 1)
 
+            if _BAD_DB_CHARS.search(dbase):
+                raise InvalidURI('Bad database name "%s"' % dbase)
+
         if opts:
-            options = split_options(opts, validate, warn)
+            options.update(split_options(opts, validate, warn))
 
     if dbase is not None:
         dbase = unquote_plus(dbase)
@@ -352,6 +457,6 @@ if __name__ == '__main__':
     import sys
     try:
         pprint.pprint(parse_uri(sys.argv[1]))
-    except InvalidURI as e:
-        print(e)
+    except InvalidURI as exc:
+        print(exc)
     sys.exit(0)

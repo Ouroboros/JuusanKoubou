@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2009-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -22,6 +22,13 @@ if PY3:
     import codecs
     import _thread as thread
     from io import BytesIO as StringIO
+
+    try:
+        import collections.abc as abc
+    except ImportError:
+        # PyPy3 (based on CPython 3.2)
+        import collections as abc
+
     MAXSIZE = sys.maxsize
 
     imap = map
@@ -46,6 +53,9 @@ if PY3:
     def reraise(exctype, value, trace=None):
         raise exctype(str(value)).with_traceback(trace)
 
+    def reraise_instance(exc_instance, trace=None):
+        raise exc_instance.with_traceback(trace)
+
     def _unicode(s):
         return s
 
@@ -53,6 +63,7 @@ if PY3:
     string_type = str
     integer_types = int
 else:
+    import collections as abc
     import thread
 
     from itertools import imap
@@ -76,9 +87,15 @@ else:
     def itervalues(d):
         return d.itervalues()
 
+    def reraise(exctype, value, trace=None):
+        _reraise(exctype, str(value), trace)
+
+    def reraise_instance(exc_instance, trace=None):
+        _reraise(exc_instance, None, trace)
+
     # "raise x, y, z" raises SyntaxError in Python 3
-    exec("""def reraise(exctype, value, trace=None):
-    raise exctype, str(value), trace
+    exec("""def _reraise(exc, value, trace):
+    raise exc, value, trace
 """)
 
     _unicode = unicode

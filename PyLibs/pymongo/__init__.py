@@ -1,4 +1,4 @@
-# Copyright 2009-2015 MongoDB, Inc.
+# Copyright 2009-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,8 +38,6 @@ GEOSPHERE = "2dsphere"
 
 .. versionadded:: 2.5
 
-.. note:: 2dsphere indexing requires server version **>= 2.4.0**.
-
 .. _spherical geospatial index: http://docs.mongodb.org/manual/core/2dsphere/
 """
 
@@ -48,8 +46,6 @@ HASHED = "hashed"
 
 .. versionadded:: 2.5
 
-.. note:: hashed indexing requires server version **>= 2.4.0**.
-
 .. _hashed index: http://docs.mongodb.org/manual/core/index-hashed/
 """
 
@@ -57,8 +53,6 @@ TEXT = "text"
 """Index specifier for a `text index`_.
 
 .. versionadded:: 2.7.1
-
-.. note:: text search requires server version **>= 2.4.0**.
 
 .. _text index: http://docs.mongodb.org/manual/core/index-text/
 """
@@ -70,7 +64,7 @@ SLOW_ONLY = 1
 ALL = 2
 """Profile all operations."""
 
-version_tuple = (3, 4, 0)
+version_tuple = (3, 7, 2)
 
 def get_version_string():
     if isinstance(version_tuple[-1], str):

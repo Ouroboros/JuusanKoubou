@@ -1,4 +1,4 @@
-# Copyright 2014-2015 MongoDB, Inc.
+# Copyright 2014-present MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -42,8 +42,8 @@ class TopologySettings(object):
         """
         if heartbeat_frequency < common.MIN_HEARTBEAT_INTERVAL:
             raise ConfigurationError(
-                "heartbeatFrequencyMS cannot be less than %d" %
-                common.MIN_HEARTBEAT_INTERVAL * 1000)
+                "heartbeatFrequencyMS cannot be less than %d" % (
+                    common.MIN_HEARTBEAT_INTERVAL * 1000,))
 
         self._seeds = seeds or [('localhost', 27017)]
         self._replica_set_name = replica_set_name
