@@ -8,7 +8,9 @@ pressing Control-K followed by to normal characters.
 Taken from Neovim and translated to Python:
 https://raw.githubusercontent.com/neovim/neovim/master/src/nvim/digraph.c
 """
-__all__ = ('DIGRAPHS', )
+__all__ = [
+    'DIGRAPHS',
+]
 
 # digraphs for Unicode from RFC1345
 # (also work for ISO-8859-1 aka latin1)
@@ -1326,7 +1328,7 @@ DIGRAPHS = {
     ('~', '!'): 161,
     ('c', '|'): 162,
     ('$', '$'): 163,
-    ('o', 'x'): 164, # currency symbol in ISO 8859-1
+    ('o', 'x'): 164,  # currency symbol in ISO 8859-1
     ('Y', '-'): 165,
     ('|', '|'): 166,
     ('c', 'O'): 169,
@@ -1354,7 +1356,7 @@ DIGRAPHS = {
     ('O', '`'): 210,
     ('O', '^'): 212,
     ('O', '~'): 213,
-    ('/', '\\'): 215, # multiplication symbol in ISO 8859-1
+    ('/', '\\'): 215,  # multiplication symbol in ISO 8859-1
     ('U', '`'): 217,
     ('U', '^'): 219,
     ('I', 'p'): 222,

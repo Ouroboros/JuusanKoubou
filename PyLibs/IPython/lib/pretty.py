@@ -77,29 +77,34 @@ Inheritance diagram:
             Portions (c) 2009 by Robert Kern.
 :license: BSD License.
 """
+
 from contextlib import contextmanager
+import datetime
+import os
+import re
 import sys
 import types
-import re
-import datetime
 from collections import deque
+from inspect import signature
 from io import StringIO
 from warnings import warn
 
 from IPython.utils.decorators import undoc
 from IPython.utils.py3compat import PYPY
 
-
 __all__ = ['pretty', 'pprint', 'PrettyPrinter', 'RepresentationPrinter',
     'for_type', 'for_type_by_name']
 
 
 MAX_SEQ_LENGTH = 1000
+# The language spec says that dicts preserve order from 3.7, but CPython
+# does so from 3.6, so it seems likely that people will expect that.
+DICT_IS_ORDERED = sys.version_info >= (3, 6)
 _re_pattern_type = type(re.compile(''))
 
 def _safe_getattr(obj, attr, default=None):
     """Safe version of getattr.
-    
+
     Same as getattr, but will return ``default`` on any Exception,
     rather than raising.
     """
@@ -241,7 +246,7 @@ class PrettyPrinter(_PrettyPrinterBase):
             self.buffer.append(Breakable(sep, width, self))
             self.buffer_width += width
             self._break_outer_groups()
-            
+
     def break_(self):
         """
         Explicitly insert a newline into the output, maintaining correct indentation.
@@ -251,7 +256,7 @@ class PrettyPrinter(_PrettyPrinterBase):
         self.output.write(' ' * self.indentation)
         self.output_width = self.indentation
         self.buffer_width = 0
-        
+
 
     def begin_group(self, indent=0, open=''):
         """
@@ -277,7 +282,7 @@ class PrettyPrinter(_PrettyPrinterBase):
         self.group_stack.append(group)
         self.group_queue.enq(group)
         self.indentation += indent
-    
+
     def _enumerate(self, seq):
         """like enumerate, but with an upper limit on the number of items"""
         for idx, x in enumerate(seq):
@@ -287,7 +292,7 @@ class PrettyPrinter(_PrettyPrinterBase):
                 self.text('...')
                 return
             yield idx, x
-    
+
     def end_group(self, dedent=0, close=''):
         """End a group. See `begin_group` for more details."""
         self.indentation -= dedent
@@ -392,6 +397,10 @@ class RepresentationPrinter(PrettyPrinter):
                             meth = cls._repr_pretty_
                             if callable(meth):
                                 return meth(obj, self, cycle)
+                        if cls is not object \
+                                and callable(cls.__dict__.get('__repr__')):
+                            return _repr_pprint(obj, self, cycle)
+
             return _default_pprint(obj, self, cycle)
         finally:
             self.end_group()
@@ -537,17 +546,12 @@ def _default_pprint(obj, p, cycle):
     p.end_group(1, '>')
 
 
-def _seq_pprinter_factory(start, end, basetype):
+def _seq_pprinter_factory(start, end):
     """
     Factory that returns a pprint function useful for sequences.  Used by
     the default pprint for tuples, dicts, and lists.
     """
     def inner(obj, p, cycle):
-        typ = type(obj)
-        if basetype is not None and typ is not basetype and typ.__repr__ != basetype.__repr__:
-            # If the subclass provides its own repr, use it instead.
-            return p.text(typ.__repr__(obj))
-
         if cycle:
             return p.text(start + '...' + end)
         step = len(start)
@@ -564,21 +568,16 @@ def _seq_pprinter_factory(start, end, basetype):
     return inner
 
 
-def _set_pprinter_factory(start, end, basetype):
+def _set_pprinter_factory(start, end):
     """
     Factory that returns a pprint function useful for sets and frozensets.
     """
     def inner(obj, p, cycle):
-        typ = type(obj)
-        if basetype is not None and typ is not basetype and typ.__repr__ != basetype.__repr__:
-            # If the subclass provides its own repr, use it instead.
-            return p.text(typ.__repr__(obj))
-
         if cycle:
             return p.text(start + '...' + end)
         if len(obj) == 0:
             # Special case.
-            p.text(basetype.__name__ + '()')
+            p.text(type(obj).__name__ + '()')
         else:
             step = len(start)
             p.begin_group(step, start)
@@ -596,24 +595,21 @@ def _set_pprinter_factory(start, end, basetype):
     return inner
 
 
-def _dict_pprinter_factory(start, end, basetype=None):
+def _dict_pprinter_factory(start, end):
     """
     Factory that returns a pprint function used by the default pprint of
     dicts and dict proxies.
     """
     def inner(obj, p, cycle):
-        typ = type(obj)
-        if basetype is not None and typ is not basetype and typ.__repr__ != basetype.__repr__:
-            # If the subclass provides its own repr, use it instead.
-            return p.text(typ.__repr__(obj))
-
         if cycle:
             return p.text('{...}')
         step = len(start)
         p.begin_group(step, start)
         keys = obj.keys()
         # if dict isn't large enough to be truncated, sort keys before displaying
-        if not (p.max_seq_length and len(obj) >= p.max_seq_length):
+        # From Python 3.7, dicts preserve order by definition, so we don't sort.
+        if not DICT_IS_ORDERED \
+                and not (p.max_seq_length and len(obj) >= p.max_seq_length):
             keys = _sorted_for_pprint(keys)
         for idx, key in p._enumerate(keys):
             if idx:
@@ -711,7 +707,11 @@ def _function_pprint(obj, p, cycle):
     mod = obj.__module__
     if mod and mod not in ('__builtin__', 'builtins', 'exceptions'):
         name = mod + '.' + name
-    p.text('<function %s>' % name)
+    try:
+       func_def = name + str(signature(obj))
+    except ValueError:
+       func_def = name
+    p.text('<function %s>' % func_def)
 
 
 def _exception_pprint(obj, p, cycle):
@@ -741,27 +741,31 @@ _type_pprinters = {
     int:                        _repr_pprint,
     float:                      _repr_pprint,
     str:                        _repr_pprint,
-    tuple:                      _seq_pprinter_factory('(', ')', tuple),
-    list:                       _seq_pprinter_factory('[', ']', list),
-    dict:                       _dict_pprinter_factory('{', '}', dict),
-    
-    set:                        _set_pprinter_factory('{', '}', set),
-    frozenset:                  _set_pprinter_factory('frozenset({', '})', frozenset),
+    tuple:                      _seq_pprinter_factory('(', ')'),
+    list:                       _seq_pprinter_factory('[', ']'),
+    dict:                       _dict_pprinter_factory('{', '}'),
+    set:                        _set_pprinter_factory('{', '}'),
+    frozenset:                  _set_pprinter_factory('frozenset({', '})'),
     super:                      _super_pprint,
     _re_pattern_type:           _re_pattern_pprint,
     type:                       _type_pprint,
     types.FunctionType:         _function_pprint,
     types.BuiltinFunctionType:  _function_pprint,
     types.MethodType:           _repr_pprint,
-    
     datetime.datetime:          _repr_pprint,
     datetime.timedelta:         _repr_pprint,
     _exception_base:            _exception_pprint
 }
 
+# render os.environ like a dict
+_env_type = type(os.environ)
+# future-proof in case os.environ becomes a plain dict?
+if _env_type is not dict:
+    _type_pprinters[_env_type] = _dict_pprinter_factory('environ{', '}')
+
 try:
     # In PyPy, types.DictProxyType is dict, setting the dictproxy printer
-    # using dict.setdefault avoids overwritting the dict printer
+    # using dict.setdefault avoids overwriting the dict printer
     _type_pprinters.setdefault(types.DictProxyType,
                                _dict_pprinter_factory('dict_proxy({', '})'))
     _type_pprinters[types.ClassType] = _type_pprint
@@ -770,7 +774,7 @@ except AttributeError: # Python 3
     _type_pprinters[types.MappingProxyType] = \
         _dict_pprinter_factory('mappingproxy({', '})')
     _type_pprinters[slice] = _repr_pprint
-    
+
 try:
     _type_pprinters[long] = _repr_pprint
     _type_pprinters[unicode] = _repr_pprint

@@ -165,7 +165,7 @@ def try_import(mod: str, only_modules=False) -> List[str]:
     except:
         return []
 
-    m_is_init = hasattr(m, '__file__') and '__init__' in m.__file__
+    m_is_init = '__init__' in (getattr(m, '__file__', '') or '')
 
     completions = []
     if (not hasattr(m, '__file__')) or (not only_modules) or m_is_init:
@@ -185,7 +185,7 @@ def try_import(mod: str, only_modules=False) -> List[str]:
 #-----------------------------------------------------------------------------
 
 def quick_completer(cmd, completions):
-    """ Easily create a trivial completer for a command.
+    r""" Easily create a trivial completer for a command.
 
     Takes either a list of completions, or all completions in string (that will
     be split on whitespace).

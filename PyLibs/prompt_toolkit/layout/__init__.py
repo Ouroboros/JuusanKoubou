@@ -24,8 +24,7 @@ Container classes::
 Control classes::
 
     - UIControl (Abstract base class)
-       |- TokenListControl (Renders a simple list of tokens)
-       |- FillControl (Fills control with one token/character.)
+       |- FormattedTextControl (Renders formatted text, or a simple list of text fragments)
        `- BufferControl (Renders an input buffer.)
 
 
@@ -46,6 +45,62 @@ And one prepared menu:
 
 """
 from __future__ import unicode_literals
+from .containers import Container, HSplit, VSplit, FloatContainer, Float, Window, WindowAlign, WindowRenderInfo, ConditionalContainer, ScrollOffsets, ColorColumn, to_container, to_window, is_container, HorizontalAlign, VerticalAlign, DynamicContainer
+from .controls import BufferControl, SearchBufferControl, DummyControl, FormattedTextControl, UIControl, UIContent
+from .dimension import Dimension, D, sum_layout_dimensions, max_layout_dimensions, to_dimension, is_dimension
+from .layout import Layout, InvalidLayoutError, walk
+from .margins import Margin, NumberedMargin, ScrollbarMargin, ConditionalMargin, PromptMargin
+from .menus import CompletionsMenu, MultiColumnCompletionsMenu
 
-from .containers import Float, FloatContainer, HSplit, VSplit, Window, ConditionalContainer
-from .controls import TokenListControl, FillControl, BufferControl
+__all__ = [
+    # Layout.
+    'Layout',
+    'InvalidLayoutError',
+    'walk',
+
+    # Dimensions.
+    'Dimension',
+    'D',
+    'sum_layout_dimensions',
+    'max_layout_dimensions',
+    'to_dimension',
+    'is_dimension',
+
+    # Containers.
+    'Container',
+    'HorizontalAlign',
+    'VerticalAlign',
+    'HSplit',
+    'VSplit',
+    'FloatContainer',
+    'Float',
+    'WindowAlign',
+    'Window',
+    'WindowRenderInfo',
+    'ConditionalContainer',
+    'ScrollOffsets',
+    'ColorColumn',
+    'to_container',
+    'to_window',
+    'is_container',
+    'DynamicContainer',
+
+    # Controls.
+    'BufferControl',
+    'SearchBufferControl',
+    'DummyControl',
+    'FormattedTextControl',
+    'UIControl',
+    'UIContent',
+
+    # Margins.
+    'Margin',
+    'NumberedMargin',
+    'ScrollbarMargin',
+    'ConditionalMargin',
+    'PromptMargin',
+
+    # Menus.
+    'CompletionsMenu',
+    'MultiColumnCompletionsMenu',
+]

@@ -2,7 +2,7 @@
 """
 IPython: tools for interactive and parallel computing in Python.
 
-http://ipython.org
+https://ipython.org
 """
 #-----------------------------------------------------------------------------
 #  Copyright (c) 2008-2011, IPython Development Team.
@@ -27,12 +27,12 @@ import sys
 #-----------------------------------------------------------------------------
 
 # Don't forget to also update setup.py when this changes!
-if sys.version_info < (3,3):
+if sys.version_info < (3, 5):
     raise ImportError(
 """
-IPython 6.0+ does not support Python 2.6, 2.7, 3.0, 3.1, or 3.2.
+IPython 7.0+ supports Python 3.5 and above.
 When using Python 2.7, please install IPython 5.x LTS Long Term Support version.
-Beginning with IPython 6.0, Python 3.3 and above is required.
+Python 3.3 and 3.4 were supported up to IPython 6.x.
 
 See IPython `README.rst` file for more information:
 
@@ -75,7 +75,7 @@ def embed_kernel(module=None, local_ns=None, **kwargs):
     
     Parameters
     ----------
-    module : ModuleType, optional
+    module : types.ModuleType, optional
         The module to load into IPython globals (default: caller)
     local_ns : dict, optional
         The namespace to load into IPython user namespace (default: caller)

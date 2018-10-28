@@ -5,19 +5,16 @@ the interesting information about completion and goto operations.
 """
 import re
 
-from parso.cache import parser_cache
 from parso.python.tree import search_ancestor
 
-from jedi._compatibility import u
 from jedi import settings
-from jedi import common
+from jedi.evaluate.utils import ignored, unite
 from jedi.cache import memoize_method
-from jedi.evaluate import representation as er
-from jedi.evaluate import instance
 from jedi.evaluate import imports
 from jedi.evaluate import compiled
-from jedi.evaluate.filters import ParamName
 from jedi.evaluate.imports import ImportName
+from jedi.evaluate.context import instance
+from jedi.evaluate.context import ClassContext, FunctionExecutionContext
 from jedi.api.keywords import KeywordName
 
 
@@ -125,13 +122,14 @@ class BaseDefinition(object):
 
         Finally, here is what you can get from :attr:`type`:
 
-        >>> defs[0].type
+        >>> defs = [str(d.type) for d in defs]  # It's unicode and in Py2 has u before it.
+        >>> defs[0]
         'module'
-        >>> defs[1].type
+        >>> defs[1]
         'class'
-        >>> defs[2].type
+        >>> defs[2]
         'instance'
-        >>> defs[3].type
+        >>> defs[3]
         'function'
 
         """
@@ -159,7 +157,7 @@ class BaseDefinition(object):
                 except IndexError:
                     pass
 
-            if name.api_type == 'module':
+            if name.api_type in 'module':
                 module_contexts = name.infer()
                 if module_contexts:
                     module_context, = module_contexts
@@ -259,7 +257,7 @@ class BaseDefinition(object):
     @property
     def description(self):
         """A textual description of the object."""
-        return u(self._name.string_name)
+        return self._name.string_name
 
     @property
     def full_name(self):
@@ -290,7 +288,7 @@ class BaseDefinition(object):
         if not path:
             return None  # for keywords the path is empty
 
-        with common.ignored(KeyError):
+        with ignored(KeyError):
             path[0] = self._mapping[path[0]]
         for key, repl in self._tuple_mapping.items():
             if tuple(path[:len(key)]) == key:
@@ -322,11 +320,11 @@ class BaseDefinition(object):
                 param_names = list(context.get_param_names())
                 if isinstance(context, instance.BoundMethod):
                     param_names = param_names[1:]
-            elif isinstance(context, (instance.AbstractInstanceContext, er.ClassContext)):
-                if isinstance(context, er.ClassContext):
-                    search = '__init__'
+            elif isinstance(context, (instance.AbstractInstanceContext, ClassContext)):
+                if isinstance(context, ClassContext):
+                    search = u'__init__'
                 else:
-                    search = '__call__'
+                    search = u'__call__'
                 names = context.get_function_slot_names(search)
                 if not names:
                     return []
@@ -335,7 +333,7 @@ class BaseDefinition(object):
                 # there's no better solution.
                 inferred = names[0].infer()
                 param_names = get_param_names(next(iter(inferred)))
-                if isinstance(context, er.ClassContext):
+                if isinstance(context, ClassContext):
                     param_names = param_names[1:]
                 return param_names
             elif isinstance(context, compiled.CompiledObject):
@@ -344,7 +342,7 @@ class BaseDefinition(object):
 
         followed = list(self._name.infer())
         if not followed or not hasattr(followed[0], 'py__call__'):
-            raise AttributeError()
+            raise AttributeError('There are no params defined on this.')
         context = followed[0]  # only check the first one.
 
         return [Definition(self._evaluator, n) for n in get_param_names(context)]
@@ -354,11 +352,8 @@ class BaseDefinition(object):
         if context is None:
             return None
 
-        if isinstance(context, er.FunctionExecutionContext):
-            # TODO the function context should be a part of the function
-            # execution context.
-            context = er.FunctionContext(
-                self._evaluator, context.parent_context, context.tree_node)
+        if isinstance(context, FunctionExecutionContext):
+            context = context.function_context
         return Definition(self._evaluator, context.name)
 
     def __repr__(self):
@@ -377,8 +372,7 @@ class BaseDefinition(object):
         if self.in_builtin_module():
             return ''
 
-        path = self._name.get_root_context().py__file__()
-        lines = parser_cache[self._evaluator.grammar._hashed][path].lines
+        lines = self._name.get_root_context().code_lines
 
         index = self._name.start_pos[0] - 1
         start_index = max(index - before, 0)
@@ -406,9 +400,10 @@ class Completion(BaseDefinition):
                 and self.type == 'Function':
             append = '('
 
-        if isinstance(self._name, ParamName) and self._stack is not None:
-            node_names = list(self._stack.get_node_names(self._evaluator.grammar._pgen_grammar))
-            if 'trailer' in node_names and 'argument' not in node_names:
+        if self._name.api_type == 'param' and self._stack is not None:
+            nonterminals = [stack_node.nonterminal for stack_node in self._stack]
+            if 'trailer' in nonterminals and 'argument' not in nonterminals:
+                # TODO this doesn't work for nested calls.
                 append += '='
 
         name = self._name.string_name
@@ -525,7 +520,7 @@ class Definition(BaseDefinition):
             if typ == 'function':
                 # For the description we want a short and a pythonic way.
                 typ = 'def'
-            return typ + ' ' + u(self._name.string_name)
+            return typ + ' ' + self._name.string_name
         elif typ == 'param':
             code = search_ancestor(tree_name, 'param').get_code(
                 include_prefix=False,
@@ -533,15 +528,14 @@ class Definition(BaseDefinition):
             )
             return typ + ' ' + code
 
-
         definition = tree_name.get_definition() or tree_name
         # Remove the prefix, because that's not what we want for get_code
         # here.
         txt = definition.get_code(include_prefix=False)
         # Delete comments:
-        txt = re.sub('#[^\n]+\n', ' ', txt)
+        txt = re.sub(r'#[^\n]+\n', ' ', txt)
         # Delete multi spaces/newlines
-        txt = re.sub('\s+', ' ', txt).strip()
+        txt = re.sub(r'\s+', ' ', txt).strip()
         return txt
 
     @property
@@ -555,7 +549,7 @@ class Definition(BaseDefinition):
         .. todo:: Add full path. This function is should return a
             `module.class.function` path.
         """
-        position = '' if self.in_builtin_module else '@%s' % (self.line)
+        position = '' if self.in_builtin_module else '@%s' % self.line
         return "%s:%s%s" % (self.module_name, self.description, position)
 
     @memoize_method
@@ -567,7 +561,7 @@ class Definition(BaseDefinition):
         """
         defs = self._name.infer()
         return sorted(
-            common.unite(defined_names(self._evaluator, d) for d in defs),
+            unite(defined_names(self._evaluator, d) for d in defs),
             key=lambda s: s._name.start_pos or (0, 0)
         )
 
@@ -641,9 +635,18 @@ class CallSignature(Definition):
         """
         return self._bracket_start_pos
 
+    @property
+    def _params_str(self):
+        return ', '.join([p.description[6:]
+                          for p in self.params])
+
     def __repr__(self):
-        return '<%s: %s index %s>' % \
-            (type(self).__name__, self._name.string_name, self.index)
+        return '<%s: %s index=%r params=[%s]>' % (
+            type(self).__name__,
+            self._name.string_name,
+            self._index,
+            self._params_str,
+        )
 
 
 class _Help(object):

@@ -115,7 +115,7 @@ def filefind(filename, path_dirs=None):
     """Find a file by looking through a sequence of paths.
 
     This iterates through a sequence of paths looking for a file and returns
-    the full, absolute path of the first occurence of the file.  If no set of
+    the full, absolute path of the first occurrence of the file.  If no set of
     path dirs is given, the filename is tested as is, after running through
     :func:`expandvars` and :func:`expanduser`.  Thus a simple call::
 
@@ -202,7 +202,7 @@ def get_home_dir(require_writable=False):
                 import _winreg as wreg  # Py 2
             key = wreg.OpenKey(
                 wreg.HKEY_CURRENT_USER,
-                "Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
             )
             homedir = wreg.QueryValueEx(key,'Personal')[0]
             key.Close()

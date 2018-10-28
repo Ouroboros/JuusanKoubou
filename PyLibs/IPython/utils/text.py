@@ -13,11 +13,7 @@ import re
 import sys
 import textwrap
 from string import Formatter
-try:
-    from pathlib import Path
-except ImportError:
-    # for Python 3.3
-    from pathlib2 import Path
+from pathlib import Path
 
 from IPython.utils import py3compat
 
@@ -85,7 +81,7 @@ class LSString(str):
 #     print arg
 #
 #
-# print_lsstring = result_display.when_type(LSString)(print_lsstring)
+# print_lsstring = result_display.register(LSString)(print_lsstring)
 
 
 class SList(list):
@@ -247,7 +243,7 @@ class SList(list):
 #
 #     nlprint(arg)   # This was a nested list printer, now removed.
 #
-# print_slist = result_display.when_type(SList)(print_slist)
+# print_slist = result_display.register(SList)(print_slist)
 
 
 def indent(instr,nspaces=4, ntabs=0, flatten=False):
@@ -592,7 +588,7 @@ class DollarFormatter(FullEvalFormatter):
         In [4]: f.format('$a or {b}', a=1, b=2)
         Out[4]: '1 or 2'
     """
-    _dollar_pattern_ignore_single_quote = re.compile("(.*?)\$(\$?[\w\.]+)(?=([^']*'[^']*')*[^']*$)")
+    _dollar_pattern_ignore_single_quote = re.compile(r"(.*?)\$(\$?[\w\.]+)(?=([^']*'[^']*')*[^']*$)")
     def parse(self, fmt_string):
         for literal_txt, field_name, format_spec, conversion \
                     in Formatter.parse(self, fmt_string):
@@ -665,9 +661,9 @@ def compute_item_matrix(items, row_first=False, empty=None, *args, **kwargs) :
     empty : (default None)
         default value to fill list if needed
     separator_size : int (default=2)
-        How much caracters will be used as a separation between each columns.
+        How much characters will be used as a separation between each columns.
     displaywidth : int (default=80)
-        The width of the area onto wich the columns should enter
+        The width of the area onto which the columns should enter
 
     Returns
     -------
@@ -675,7 +671,7 @@ def compute_item_matrix(items, row_first=False, empty=None, *args, **kwargs) :
     strings_matrix
 
         nested list of string, the outer most list contains as many list as
-        rows, the innermost lists have each as many element as colums. If the
+        rows, the innermost lists have each as many element as columns. If the
         total number of elements in `items` does not equal the product of
         rows*columns, the last element of some lists are filled with `None`.
 

@@ -1,21 +1,51 @@
 """
 Styling for prompt_toolkit applications.
 """
-from __future__ import unicode_literals
+from __future__ import unicode_literals, absolute_import
 
-from .base import *
-from .defaults import *
-from .from_dict import *
-from .from_pygments import *
-from .utils import *
+from .base import Attrs, DEFAULT_ATTRS, ANSI_COLOR_NAMES, BaseStyle, DummyStyle, DynamicStyle
+from .defaults import default_ui_style, default_pygments_style
+from .style import Style, Priority, merge_styles, parse_color
+from .pygments import style_from_pygments_cls, style_from_pygments_dict, pygments_token_to_classname
+from .named_colors import NAMED_COLORS
+from .style_transformation import StyleTransformation, SwapLightAndDarkStyleTransformation, ReverseStyleTransformation, DummyStyleTransformation, ConditionalStyleTransformation, SetDefaultColorStyleTransformation, AdjustBrightnessStyleTransformation, merge_style_transformations, DynamicStyleTransformation
 
 
-#: The default built-in style.
-#: (For backwards compatibility, when Pygments is installed, this includes the
-#: default Pygments style.)
-try:
-    import pygments
-except ImportError:
-    DEFAULT_STYLE = style_from_dict(DEFAULT_STYLE_EXTENSIONS)
-else:
-    DEFAULT_STYLE = style_from_pygments()
+__all__ = [
+    # Base.
+    'Attrs',
+    'DEFAULT_ATTRS',
+    'ANSI_COLOR_NAMES',
+    'BaseStyle',
+    'DummyStyle',
+    'DynamicStyle',
+
+    # Defaults.
+    'default_ui_style',
+    'default_pygments_style',
+
+    # Style.
+    'Style',
+    'Priority',
+    'merge_styles',
+    'parse_color',
+
+    # Style transformation.
+    'StyleTransformation',
+    'SwapLightAndDarkStyleTransformation',
+    'ReverseStyleTransformation',
+    'SetDefaultColorStyleTransformation',
+    'AdjustBrightnessStyleTransformation',
+    'DummyStyleTransformation',
+    'ConditionalStyleTransformation',
+    'DynamicStyleTransformation',
+    'merge_style_transformations',
+
+    # Pygments.
+    'style_from_pygments_cls',
+    'style_from_pygments_dict',
+    'pygments_token_to_classname',
+
+    # Named colors.
+    'NAMED_COLORS',
+]

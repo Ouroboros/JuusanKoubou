@@ -10,10 +10,13 @@ import string
 import weakref
 from six.moves import range, map
 
-from .selection import SelectionType, SelectionState, PasteMode
 from .clipboard import ClipboardData
+from .filters import vi_mode
+from .selection import SelectionType, SelectionState, PasteMode
 
-__all__ = ('Document',)
+__all__ = [
+    'Document',
+]
 
 
 # Regex for finding "words" in documents. (We consider a group of alnum
@@ -43,7 +46,7 @@ class _ImmutableLineList(list):
     (Useful for detecting obvious bugs.)
     """
     def _error(self, *a, **kw):
-        raise NotImplementedError('Attempt to modifiy an immutable list.')
+        raise NotImplementedError('Attempt to modify an immutable list.')
 
     __setitem__ = _error
     append = _error
@@ -117,6 +120,12 @@ class Document(object):
 
     def __repr__(self):
         return '%s(%r, %r)' % (self.__class__.__name__, self.text, self.cursor_position)
+
+    def __eq__(self, other):
+        assert isinstance(other, Document)
+        return (self.text == other.text and
+                self.cursor_position == other.cursor_position and
+                self.selection == other.selection)
 
     @property
     def text(self):
@@ -293,7 +302,6 @@ class Document(object):
 
         return row, col
 
-
     def translate_row_col_to_index(self, row, col):
         """
         Given a (row, col) tuple, return the corresponding index.
@@ -341,7 +349,7 @@ class Document(object):
         Find `text` after the cursor, return position relative to the cursor
         position. Return `None` if nothing was found.
 
-        :param count: Find the n-th occurance.
+        :param count: Find the n-th occurrence.
         """
         assert isinstance(ignore_case, bool)
 
@@ -371,7 +379,7 @@ class Document(object):
 
     def find_all(self, sub, ignore_case=False):
         """
-        Find all occurances of the substring. Return a list of absolute
+        Find all occurrences of the substring. Return a list of absolute
         positions in the document.
         """
         flags = re.IGNORECASE if ignore_case else 0
@@ -382,7 +390,7 @@ class Document(object):
         Find `text` before the cursor, return position relative to the cursor
         position. Return `None` if nothing was found.
 
-        :param count: Find the n-th occurance.
+        :param count: Find the n-th occurrence.
         """
         if in_current_line:
             before_cursor = self.current_line_before_cursor[::-1]
@@ -777,11 +785,12 @@ class Document(object):
 
     def selection_ranges(self):
         """
-        Return a list of (from, to) tuples for the selection or none if nothing
-        was selected.  start and end position are always included in the
-        selection.
+        Return a list of `(from, to)` tuples for the selection or none if
+        nothing was selected. The upper boundary is not included.
 
         This will yield several (from, to) tuples in case of a BLOCK selection.
+        This will return zero ranges, like (8,8) for empty lines in a block
+        selection.
         """
         if self.selection:
             from_, to = sorted([self.cursor_position, self.selection.original_cursor_position])
@@ -792,11 +801,15 @@ class Document(object):
                 from_column, to_column = sorted([from_column, to_column])
                 lines = self.lines
 
+                if vi_mode():
+                    to_column += 1
+
                 for l in range(from_line, to_line + 1):
                     line_length = len(lines[l])
-                    if from_column < line_length:
+
+                    if from_column <= line_length:
                         yield (self.translate_row_col_to_index(l, from_column),
-                               self.translate_row_col_to_index(l, min(line_length - 1, to_column)))
+                               self.translate_row_col_to_index(l, min(line_length, to_column)))
             else:
                 # In case of a LINES selection, go to the start/end of the lines.
                 if self.selection.type == SelectionType.LINES:
@@ -807,16 +820,27 @@ class Document(object):
                     else:
                         to = len(self.text) - 1
 
+                # In Vi mode, the upper boundary is always included. For Emacs,
+                # that's not the case.
+                if vi_mode():
+                    to += 1
+
                 yield from_, to
 
     def selection_range_at_line(self, row):
         """
         If the selection spans a portion of the given line, return a (from, to) tuple.
-        Otherwise, return None.
+
+        The returned upper boundary is not included in the selection, so
+        `(0, 0)` is an empty selection.  `(0, 1)`, is a one character selection.
+
+        Returns None if the selection doesn't cover this line at all.
         """
         if self.selection:
+            line = self.lines[row]
+
             row_start = self.translate_row_col_to_index(row, 0)
-            row_end = self.translate_row_col_to_index(row, max(0, len(self.lines[row]) - 1))
+            row_end = self.translate_row_col_to_index(row, len(line))
 
             from_, to = sorted([self.cursor_position, self.selection.original_cursor_position])
 
@@ -828,15 +852,25 @@ class Document(object):
                 if self.selection.type == SelectionType.LINES:
                     intersection_start = row_start
                     intersection_end = row_end
+
                 elif self.selection.type == SelectionType.BLOCK:
                     _, col1 = self.translate_index_to_position(from_)
                     _, col2 = self.translate_index_to_position(to)
                     col1, col2 = sorted([col1, col2])
+
+                    if col1 > len(line):
+                        return  # Block selection doesn't cross this line.
+
                     intersection_start = self.translate_row_col_to_index(row, col1)
                     intersection_end = self.translate_row_col_to_index(row, col2)
 
                 _, from_column = self.translate_index_to_position(intersection_start)
                 _, to_column = self.translate_index_to_position(intersection_end)
+
+                # In Vi mode, the upper boundary is always included. For Emacs
+                # mode, that's not the case.
+                if vi_mode():
+                    to_column += 1
 
                 return from_column, to_column
 
@@ -857,8 +891,8 @@ class Document(object):
                     new_cursor_position = from_
 
                 remaining_parts.append(self.text[last_to:from_])
-                cut_parts.append(self.text[from_:to + 1])
-                last_to = to + 1
+                cut_parts.append(self.text[from_:to])
+                last_to = to
 
             remaining_parts.append(self.text[last_to:])
 

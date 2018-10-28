@@ -13,6 +13,7 @@
 
 import abc
 import ast
+import asyncio
 import atexit
 import builtins as builtin_mod
 import functools
@@ -30,6 +31,7 @@ from io import open as io_open
 from pickleshare import PickleShareDB
 
 from traitlets.config.configurable import SingletonConfigurable
+from traitlets.utils.importstring import import_item
 from IPython.core import oinspect
 from IPython.core import magic
 from IPython.core import page
@@ -48,7 +50,7 @@ from IPython.core.error import InputRejected, UsageError
 from IPython.core.extensions import ExtensionManager
 from IPython.core.formatters import DisplayFormatter
 from IPython.core.history import HistoryManager
-from IPython.core.inputsplitter import ESC_MAGIC, ESC_MAGIC2
+from IPython.core.inputtransformer2 import ESC_MAGIC, ESC_MAGIC2
 from IPython.core.logger import Logger
 from IPython.core.macro import Macro
 from IPython.core.payload import PayloadManager
@@ -73,13 +75,13 @@ from IPython.utils.text import format_screen, LSString, SList, DollarFormatter
 from IPython.utils.tempdir import TemporaryDirectory
 from traitlets import (
     Integer, Bool, CaselessStrEnum, Enum, List, Dict, Unicode, Instance, Type,
-    observe, default,
+    observe, default, validate, Any
 )
 from warnings import warn
 from logging import error
 import IPython.core.hooks
 
-from typing import List as ListType
+from typing import List as ListType, Tuple
 from ast import AST
 
 # NoOpContext is deprecated, but ipykernel imports it from here.
@@ -112,6 +114,104 @@ else:
     _assign_nodes         = (ast.AugAssign, ast.Assign )
     _single_targets_nodes = (ast.AugAssign, )
 
+#-----------------------------------------------------------------------------
+# Await Helpers
+#-----------------------------------------------------------------------------
+
+def removed_co_newlocals(function:types.FunctionType) -> types.FunctionType:
+    """Return a function that do not create a new local scope. 
+
+    Given a function, create a clone of this function where the co_newlocal flag
+    has been removed, making this function code actually run in the sourounding
+    scope. 
+
+    We need this in order to run asynchronous code in user level namespace.
+    """
+    from types import CodeType, FunctionType
+    CO_NEWLOCALS = 0x0002
+    code = function.__code__
+    new_code = CodeType(
+        code.co_argcount, 
+        code.co_kwonlyargcount,
+        code.co_nlocals, 
+        code.co_stacksize, 
+        code.co_flags & ~CO_NEWLOCALS,
+        code.co_code, 
+        code.co_consts,
+        code.co_names, 
+        code.co_varnames, 
+        code.co_filename, 
+        code.co_name, 
+        code.co_firstlineno, 
+        code.co_lnotab, 
+        code.co_freevars, 
+        code.co_cellvars
+    )
+    return FunctionType(new_code, globals(), function.__name__, function.__defaults__)
+
+
+# we still need to run things using the asyncio eventloop, but there is no
+# async integration
+from .async_helpers import (_asyncio_runner,  _asyncify, _pseudo_sync_runner)
+
+if sys.version_info > (3, 5):
+    from .async_helpers import _curio_runner, _trio_runner, _should_be_async
+else :
+    _curio_runner = _trio_runner = None
+
+    def _should_be_async(cell:str)->bool:
+        return False
+
+
+def _ast_asyncify(cell:str, wrapper_name:str) -> ast.Module:
+    """
+    Parse a cell with top-level await and modify the AST to be able to run it later.
+
+    Parameter
+    ---------
+
+    cell: str
+        The code cell to asyncronify
+    wrapper_name: str
+        The name of the function to be used to wrap the passed `cell`. It is
+        advised to **not** use a python identifier in order to not pollute the
+        global namespace in which the function will be ran.
+
+    Return
+    ------
+
+    A module object AST containing **one** function named `wrapper_name`.
+
+    The given code is wrapped in a async-def function, parsed into an AST, and
+    the resulting function definition AST is modified to return the last
+    expression.
+
+    The last expression or await node is moved into a return statement at the
+    end of the function, and removed from its original location. If the last
+    node is not Expr or Await nothing is done.
+
+    The function `__code__` will need to be later modified  (by
+    ``removed_co_newlocals``) in a subsequent step to not create new `locals()`
+    meaning that the local and global scope are the same, ie as if the body of
+    the function was at module level.
+
+    Lastly a call to `locals()` is made just before the last expression of the
+    function, or just after the last assignment or statement to make sure the
+    global dict is updated as python function work with a local fast cache which
+    is updated only on `local()` calls.
+    """
+
+    from ast import Expr, Await, Return
+    tree = ast.parse(_asyncify(cell))
+
+    function_def = tree.body[0]
+    function_def.name = wrapper_name
+    try_block = function_def.body[0]
+    lastexpr = try_block.body[-1]
+    if isinstance(lastexpr, (Expr, Await)):
+        try_block.body[-1] = Return(lastexpr.value)
+    ast.fix_missing_locations(tree)
+    return tree
 #-----------------------------------------------------------------------------
 # Globals
 #-----------------------------------------------------------------------------
@@ -170,7 +270,31 @@ class SeparateUnicode(Unicode):
 class DummyMod(object):
     """A dummy module used for IPython's interactive module when
     a namespace must be assigned to the module's __dict__."""
-    pass
+    __spec__ = None
+
+
+class ExecutionInfo(object):
+    """The arguments used for a call to :meth:`InteractiveShell.run_cell`
+
+    Stores information about what is going to happen.
+    """
+    raw_cell = None
+    store_history = False
+    silent = False
+    shell_futures = True
+
+    def __init__(self, raw_cell, store_history, silent, shell_futures):
+        self.raw_cell = raw_cell
+        self.store_history = store_history
+        self.silent = silent
+        self.shell_futures = shell_futures
+
+    def __repr__(self):
+        name = self.__class__.__qualname__
+        raw_cell = ((self.raw_cell[:50] + '..')
+                    if len(self.raw_cell) > 50 else self.raw_cell)
+        return '<%s object at %x, raw_cell="%s" store_history=%s silent=%s shell_futures=%s>' %\
+               (name, id(self), raw_cell, self.store_history, self.silent, self.shell_futures)
 
 
 class ExecutionResult(object):
@@ -181,7 +305,11 @@ class ExecutionResult(object):
     execution_count = None
     error_before_exec = None
     error_in_exec = None
+    info = None
     result = None
+
+    def __init__(self, info):
+        self.info = info
 
     @property
     def success(self):
@@ -196,8 +324,8 @@ class ExecutionResult(object):
 
     def __repr__(self):
         name = self.__class__.__qualname__
-        return '<%s object at %x, execution_count=%s error_before_exec=%s error_in_exec=%s result=%s>' %\
-                (name, id(self), self.execution_count, self.error_before_exec, self.error_in_exec, repr(self.result))
+        return '<%s object at %x, execution_count=%s error_before_exec=%s error_in_exec=%s info=%s result=%s>' %\
+                (name, id(self), self.execution_count, self.error_before_exec, self.error_in_exec, repr(self.info), repr(self.result))
 
 
 class InteractiveShell(SingletonConfigurable):
@@ -222,13 +350,49 @@ class InteractiveShell(SingletonConfigurable):
         objects are automatically called (even if no arguments are present).
         """
     ).tag(config=True)
-    # TODO: remove all autoindent logic and put into frontends.
-    # We can't do this yet because even runlines uses the autoindent.
+
     autoindent = Bool(True, help=
         """
         Autoindent IPython code entered interactively.
         """
     ).tag(config=True)
+
+    autoawait = Bool(True, help=
+        """
+        Automatically run await statement in the top level repl.
+        """
+    ).tag(config=True)
+
+    loop_runner_map ={
+        'asyncio':(_asyncio_runner, True),
+        'curio':(_curio_runner, True),
+        'trio':(_trio_runner, True),
+        'sync': (_pseudo_sync_runner, False)
+    }
+
+    loop_runner = Any(default_value="IPython.core.interactiveshell._asyncio_runner",
+        allow_none=True,
+        help="""Select the loop runner that will be used to execute top-level asynchronous code"""
+    ).tag(config=True)
+
+    @default('loop_runner')
+    def _default_loop_runner(self):
+        return import_item("IPython.core.interactiveshell._asyncio_runner")
+
+    @validate('loop_runner')
+    def _import_runner(self, proposal):
+        if isinstance(proposal.value, str):
+            if proposal.value in self.loop_runner_map:
+                runner, autoawait = self.loop_runner_map[proposal.value]
+                self.autoawait = autoawait
+                return runner
+            runner = import_item(proposal.value)
+            if not callable(runner):
+                raise ValueError('loop_runner must be callable')
+            return runner
+        if not callable(proposal.value):
+            raise ValueError('loop_runner must be callable')
+        return proposal.value
 
     automagic = Bool(True, help=
         """
@@ -306,15 +470,31 @@ class InteractiveShell(SingletonConfigurable):
     filename = Unicode("<ipython console>")
     ipython_dir= Unicode('').tag(config=True) # Set to get_ipython_dir() in __init__
 
-    # Input splitter, to transform input line by line and detect when a block
-    # is ready to be executed.
-    input_splitter = Instance('IPython.core.inputsplitter.IPythonInputSplitter',
-                              (), {'line_input_checker': True})
+    # Used to transform cells before running them, and check whether code is complete
+    input_transformer_manager = Instance('IPython.core.inputtransformer2.TransformerManager',
+                                         ())
 
-    # This InputSplitter instance is used to transform completed cells before
-    # running them. It allows cell magics to contain blank lines.
-    input_transformer_manager = Instance('IPython.core.inputsplitter.IPythonInputSplitter',
-                                         (), {'line_input_checker': False})
+    @property
+    def input_transformers_cleanup(self):
+        return self.input_transformer_manager.cleanup_transforms
+
+    input_transformers_post = List([],
+        help="A list of string input transformers, to be applied after IPython's "
+             "own input transformations."
+    )
+
+    @property
+    def input_splitter(self):
+        """Make this available for backward compatibility (pre-7.0 release) with existing code.
+
+        For example, ipykernel ipykernel currently uses
+        `shell.input_splitter.check_complete`
+        """
+        from warnings import warn
+        warn("`input_splitter` is deprecated since IPython 7.0, prefer `input_transformer_manager`.",
+             DeprecationWarning, stacklevel=2
+        )
+        return self.input_transformer_manager
 
     logstart = Bool(False, help=
         """
@@ -623,7 +803,9 @@ class InteractiveShell(SingletonConfigurable):
         This will allow deprecation warning of function used interactively to show
         warning to users, and still hide deprecation warning from libraries import.
         """
-        warnings.filterwarnings("default", category=DeprecationWarning, module=self.user_ns.get("__name__"))
+        if sys.version_info < (3,7):
+            warnings.filterwarnings("default", category=DeprecationWarning, module=self.user_ns.get("__name__"))
+
 
     def init_builtins(self):
         # A single, static flag that we set to True.  Its presence indicates
@@ -704,16 +886,23 @@ class InteractiveShell(SingletonConfigurable):
             # Not in a virtualenv
             return
         
-        # venv detection:
+        p = os.path.normcase(sys.executable)
+        p_venv = os.path.normcase(os.environ['VIRTUAL_ENV'])
+
+        # executable path should end like /bin/python or \\scripts\\python.exe
+        p_exe_up2 = os.path.dirname(os.path.dirname(p))
+        if p_exe_up2 and os.path.exists(p_venv) and os.path.samefile(p_exe_up2, p_venv):
+            # Our exe is inside the virtualenv, don't need to do anything.
+            return
+
+        # fallback venv detection:
         # stdlib venv may symlink sys.executable, so we can't use realpath.
         # but others can symlink *to* the venv Python, so we can't just use sys.executable.
         # So we just check every item in the symlink tree (generally <= 3)
-        p = os.path.normcase(sys.executable)
         paths = [p]
         while os.path.islink(p):
             p = os.path.normcase(os.path.join(os.path.dirname(p), os.readlink(p)))
             paths.append(p)
-        p_venv = os.path.normcase(os.environ['VIRTUAL_ENV'])
         
         # In Cygwin paths like "c:\..." and '\cygdrive\c\...' are possible
         if p_venv.startswith('\\cygdrive'):
@@ -1144,7 +1333,7 @@ class InteractiveShell(SingletonConfigurable):
         -----
         All data structures here are only filled in, they are NOT reset by this
         method.  If they were not empty before, data will simply be added to
-        therm.
+        them.
         """
         # This function works in two parts: first we put a few things in
         # user_ns, and we sync that contents into user_ns_hidden so that these
@@ -1413,6 +1602,7 @@ class InteractiveShell(SingletonConfigurable):
         ospace = None
         parent = None
         obj = None
+
 
         # Look for the given name by splitting it in parts.  If the head is
         # found, then we look for all the remaining parts as members, and only
@@ -1871,7 +2061,7 @@ class InteractiveShell(SingletonConfigurable):
                 # Not the format we expect; leave it alone
                 pass
 
-        # If the error occured when executing compiled code, we should provide full stacktrace.
+        # If the error occurred when executing compiled code, we should provide full stacktrace.
         elist = traceback.extract_tb(last_traceback) if running_compiled_code else []
         stb = self.SyntaxTB.structured_traceback(etype, value, elist)
         self._showtraceback(etype, value, stb)
@@ -1879,7 +2069,7 @@ class InteractiveShell(SingletonConfigurable):
     # This is overridden in TerminalInteractiveShell to show a message about
     # the %paste magic.
     def showindentationerror(self):
-        """Called by run_cell when there's an IndentationError in code entered
+        """Called by _run_cell when there's an IndentationError in code entered
         at the prompt.
 
         This is overridden in TerminalInteractiveShell to show a message about
@@ -1912,7 +2102,7 @@ class InteractiveShell(SingletonConfigurable):
 
     def _indent_current_str(self):
         """return the current level of indentation as a string"""
-        return self.input_splitter.indent_spaces * ' '
+        return self.input_splitter.get_indent_spaces() * ' '
 
     #-------------------------------------------------------------------------
     # Things related to text completion
@@ -1949,7 +2139,7 @@ class InteractiveShell(SingletonConfigurable):
         self.set_hook('complete_command', cd_completer, str_key = '%cd')
         self.set_hook('complete_command', reset_completer, str_key = '%reset')
 
-
+    @skip_doctest
     def complete(self, text, line=None, cursor_pos=None):
         """Return the completed text and a list of completions.
 
@@ -2032,6 +2222,8 @@ class InteractiveShell(SingletonConfigurable):
             m.ExtensionMagics, m.HistoryMagics, m.LoggingMagics,
             m.NamespaceMagics, m.OSMagics, m.PylabMagics, m.ScriptMagics,
         )
+        if sys.version_info >(3,5):
+            self.register_magics(m.AsyncMagics)
 
         # Register Magic Aliases
         mman = self.magics_manager
@@ -2621,13 +2813,105 @@ class InteractiveShell(SingletonConfigurable):
         -------
         result : :class:`ExecutionResult`
         """
-        result = ExecutionResult()
+        result = None
+        try:
+            result = self._run_cell(
+                raw_cell, store_history, silent, shell_futures)
+        finally:
+            self.events.trigger('post_execute')
+            if not silent:
+                self.events.trigger('post_run_cell', result)
+        return result
+
+    def _run_cell(self, raw_cell:str, store_history:bool, silent:bool, shell_futures:bool):
+        """Internal method to run a complete IPython cell."""
+        coro = self.run_cell_async(
+            raw_cell,
+            store_history=store_history,
+            silent=silent,
+            shell_futures=shell_futures,
+        )
+
+        # run_cell_async is async, but may not actually need an eventloop.
+        # when this is the case, we want to run it using the pseudo_sync_runner
+        # so that code can invoke eventloops (for example via the %run , and
+        # `%paste` magic.
+        if self.should_run_async(raw_cell):
+            runner = self.loop_runner
+        else:
+            runner = _pseudo_sync_runner
+
+        try:
+            return runner(coro)
+        except BaseException as e:
+            info = ExecutionInfo(raw_cell, store_history, silent, shell_futures)
+            result = ExecutionResult(info)
+            result.error_in_exec = e
+            self.showtraceback(running_compiled_code=True)
+            return result
+        return
+
+    def should_run_async(self, raw_cell: str) -> bool:
+        """Return whether a cell should be run asynchronously via a coroutine runner
+
+        Parameters
+        ----------
+        raw_cell: str
+            The code to be executed
+
+        Returns
+        -------
+        result: bool
+            Whether the code needs to be run with a coroutine runner or not
+
+        .. versionadded: 7.0
+        """
+        if not self.autoawait:
+            return False
+        try:
+            cell = self.transform_cell(raw_cell)
+        except Exception:
+            # any exception during transform will be raised
+            # prior to execution
+            return False
+        return _should_be_async(cell)
+
+    @asyncio.coroutine
+    def run_cell_async(self, raw_cell: str, store_history=False, silent=False, shell_futures=True) -> ExecutionResult:
+        """Run a complete IPython cell asynchronously.
+
+        Parameters
+        ----------
+        raw_cell : str
+          The code (including IPython code such as %magic functions) to run.
+        store_history : bool
+          If True, the raw and translated cell will be stored in IPython's
+          history. For user code calling back into IPython's machinery, this
+          should be set to False.
+        silent : bool
+          If True, avoid side-effects, such as implicit displayhooks and
+          and logging.  silent=True forces store_history=False.
+        shell_futures : bool
+          If True, the code will share future statements with the interactive
+          shell. It will both be affected by previous __future__ imports, and
+          any __future__ imports in the code will affect the shell. If False,
+          __future__ imports are not shared in either direction.
+
+        Returns
+        -------
+        result : :class:`ExecutionResult`
+
+        .. versionadded: 7.0
+        """
+        info = ExecutionInfo(
+            raw_cell, store_history, silent, shell_futures)
+        result = ExecutionResult(info)
 
         if (not raw_cell) or raw_cell.isspace():
             self.last_execution_succeeded = True
             self.last_execution_result = result
             return result
-        
+
         if silent:
             store_history = False
 
@@ -2635,6 +2919,8 @@ class InteractiveShell(SingletonConfigurable):
             result.execution_count = self.execution_count
 
         def error_before_exec(value):
+            if store_history:
+                self.execution_count += 1
             result.error_before_exec = value
             self.last_execution_succeeded = False
             self.last_execution_result = result
@@ -2642,30 +2928,19 @@ class InteractiveShell(SingletonConfigurable):
 
         self.events.trigger('pre_execute')
         if not silent:
-            self.events.trigger('pre_run_cell')
+            self.events.trigger('pre_run_cell', info)
 
         # If any of our input transformation (input_transformer_manager or
         # prefilter_manager) raises an exception, we store it in this variable
         # so that we can display the error after logging the input and storing
         # it in the history.
-        preprocessing_exc_tuple = None
         try:
-            # Static input transformations
-            cell = self.input_transformer_manager.transform_cell(raw_cell)
-        except SyntaxError:
+            cell = self.transform_cell(raw_cell)
+        except Exception:
             preprocessing_exc_tuple = sys.exc_info()
             cell = raw_cell  # cell has to exist so it can be stored/logged
         else:
-            if len(cell.splitlines()) == 1:
-                # Dynamic transformations - only applied for single line commands
-                with self.builtin_trap:
-                    try:
-                        # use prefilter_lines to handle trailing newlines
-                        # restore trailing newline for ast.parse
-                        cell = self.prefilter_manager.prefilter_lines(cell) + '\n'
-                    except Exception:
-                        # don't allow prefilter errors to crash IPython
-                        preprocessing_exc_tuple = sys.exc_info()
+            preprocessing_exc_tuple = None
 
         # Store raw and processed history
         if store_history:
@@ -2686,27 +2961,43 @@ class InteractiveShell(SingletonConfigurable):
         # compiler
         compiler = self.compile if shell_futures else CachingCompiler()
 
+        _run_async = False
+
         with self.builtin_trap:
             cell_name = self.compile.cache(cell, self.execution_count)
 
             with self.display_trap:
                 # Compile to bytecode
                 try:
-                    code_ast = compiler.ast_parse(cell, filename=cell_name)
+                    if self.autoawait and _should_be_async(cell):
+                        # the code AST below will not be user code: we wrap it
+                        # in an `async def`. This will likely make some AST
+                        # transformer below miss some transform opportunity and
+                        # introduce a small coupling to run_code (in which we
+                        # bake some assumptions of what _ast_asyncify returns.
+                        # they are ways around (like grafting part of the ast
+                        # later:
+                        #    - Here, return code_ast.body[0].body[1:-1], as well
+                        #    as last expression in  return statement which is
+                        #    the user code part.
+                        #    - Let it go through the AST transformers, and graft
+                        #    - it back after the AST transform
+                        # But that seem unreasonable, at least while we
+                        # do not need it.
+                        code_ast = _ast_asyncify(cell, 'async-def-wrapper')
+                        _run_async = True
+                    else:
+                        code_ast = compiler.ast_parse(cell, filename=cell_name)
                 except self.custom_exceptions as e:
                     etype, value, tb = sys.exc_info()
                     self.CustomTB(etype, value, tb)
                     return error_before_exec(e)
                 except IndentationError as e:
                     self.showindentationerror()
-                    if store_history:
-                        self.execution_count += 1
                     return error_before_exec(e)
                 except (OverflowError, SyntaxError, ValueError, TypeError,
                         MemoryError) as e:
                     self.showsyntaxerror()
-                    if store_history:
-                        self.execution_count += 1
                     return error_before_exec(e)
 
                 # Apply AST transformations
@@ -2714,8 +3005,6 @@ class InteractiveShell(SingletonConfigurable):
                     code_ast = self.transform_ast(code_ast)
                 except InputRejected as e:
                     self.showtraceback()
-                    if store_history:
-                        self.execution_count += 1
                     return error_before_exec(e)
 
                 # Give the displayhook a reference to our ExecutionResult so it
@@ -2724,19 +3013,18 @@ class InteractiveShell(SingletonConfigurable):
 
                 # Execute the user code
                 interactivity = "none" if silent else self.ast_node_interactivity
-                has_raised = self.run_ast_nodes(code_ast.body, cell_name,
-                   interactivity=interactivity, compiler=compiler, result=result)
-                
+                if _run_async:
+                    interactivity = 'async'
+
+                has_raised = yield from self.run_ast_nodes(code_ast.body, cell_name,
+                       interactivity=interactivity, compiler=compiler, result=result)
+
                 self.last_execution_succeeded = not has_raised
                 self.last_execution_result = result
 
                 # Reset this so later displayed values do not modify the
                 # ExecutionResult
                 self.displayhook.exec_result = None
-
-                self.events.trigger('post_execute')
-                if not silent:
-                    self.events.trigger('post_run_cell')
 
         if store_history:
             # Write output to the database. Does nothing unless
@@ -2746,7 +3034,37 @@ class InteractiveShell(SingletonConfigurable):
             self.execution_count += 1
 
         return result
-    
+
+    def transform_cell(self, raw_cell):
+        """Transform an input cell before parsing it.
+
+        Static transformations, implemented in IPython.core.inputtransformer2,
+        deal with things like ``%magic`` and ``!system`` commands.
+        These run on all input.
+        Dynamic transformations, for things like unescaped magics and the exit
+        autocall, depend on the state of the interpreter.
+        These only apply to single line inputs.
+
+        These string-based transformations are followed by AST transformations;
+        see :meth:`transform_ast`.
+        """
+        # Static input transformations
+        cell = self.input_transformer_manager.transform_cell(raw_cell)
+
+        if len(cell.splitlines()) == 1:
+            # Dynamic transformations - only applied for single line commands
+            with self.builtin_trap:
+                # use prefilter_lines to handle trailing newlines
+                # restore trailing newline for ast.parse
+                cell = self.prefilter_manager.prefilter_lines(cell) + '\n'
+
+        lines = cell.splitlines(keepends=True)
+        for transform in self.input_transformers_post:
+            lines = transform(lines)
+        cell = ''.join(lines)
+
+        return cell
+
     def transform_ast(self, node):
         """Apply the AST transformations from self.ast_transformers
         
@@ -2773,12 +3091,12 @@ class InteractiveShell(SingletonConfigurable):
             except Exception:
                 warn("AST transformer %r threw an error. It will be unregistered." % transformer)
                 self.ast_transformers.remove(transformer)
-        
+
         if self.ast_transformers:
             ast.fix_missing_locations(node)
         return node
-                
 
+    @asyncio.coroutine
     def run_ast_nodes(self, nodelist:ListType[AST], cell_name:str, interactivity='last_expr',
                         compiler=compile, result=None):
         """Run a sequence of AST nodes. The execution mode depends on the
@@ -2799,6 +3117,12 @@ class InteractiveShell(SingletonConfigurable):
           are not displayed) 'last_expr_or_assign' will run the last expression
           or the last assignment. Other values for this parameter will raise a
           ValueError.
+
+          Experimental value: 'async' Will try to run top level interactive
+          async/await code in default runner, this will not respect the
+          interactivty setting and will only run the last node if it is an
+          expression. 
+
         compiler : callable
           A function with the same interface as the built-in compile(), to turn
           the AST nodes into code objects. Default is the built-in compile().
@@ -2812,7 +3136,6 @@ class InteractiveShell(SingletonConfigurable):
         """
         if not nodelist:
             return
-
         if interactivity == 'last_expr_or_assign':
             if isinstance(nodelist[-1], _assign_nodes):
                 asg = nodelist[-1]
@@ -2828,6 +3151,7 @@ class InteractiveShell(SingletonConfigurable):
                     nodelist.append(nnode)
             interactivity = 'last_expr'
 
+        _async = False
         if interactivity == 'last_expr':
             if isinstance(nodelist[-1], ast.Expr):
                 interactivity = "last"
@@ -2840,21 +3164,32 @@ class InteractiveShell(SingletonConfigurable):
             to_run_exec, to_run_interactive = nodelist[:-1], nodelist[-1:]
         elif interactivity == 'all':
             to_run_exec, to_run_interactive = [], nodelist
+        elif interactivity == 'async':
+            _async = True
         else:
             raise ValueError("Interactivity was %r" % interactivity)
-
         try:
-            for i, node in enumerate(to_run_exec):
-                mod = ast.Module([node])
-                code = compiler(mod, cell_name, "exec")
-                if self.run_code(code, result):
+            if _async:
+                # If interactivity is async the semantics of run_code are
+                # completely different Skip usual machinery.
+                mod = ast.Module(nodelist)
+                async_wrapper_code = compiler(mod, 'cell_name', 'exec')
+                exec(async_wrapper_code, self.user_global_ns, self.user_ns)
+                async_code = removed_co_newlocals(self.user_ns.pop('async-def-wrapper')).__code__
+                if (yield from self.run_code(async_code, result, async_=True)):
                     return True
+            else:
+                for i, node in enumerate(to_run_exec):
+                    mod = ast.Module([node])
+                    code = compiler(mod, cell_name, "exec")
+                    if (yield from self.run_code(code, result)):
+                        return True
 
-            for i, node in enumerate(to_run_interactive):
-                mod = ast.Interactive([node])
-                code = compiler(mod, cell_name, "single")
-                if self.run_code(code, result):
-                    return True
+                for i, node in enumerate(to_run_interactive):
+                    mod = ast.Interactive([node])
+                    code = compiler(mod, cell_name, "single")
+                    if (yield from self.run_code(code, result)):
+                        return True
 
             # Flush softspace
             if softspace(sys.stdout, 0):
@@ -2877,7 +3212,23 @@ class InteractiveShell(SingletonConfigurable):
 
         return False
 
-    def run_code(self, code_obj, result=None):
+    def _async_exec(self, code_obj: types.CodeType, user_ns: dict):
+        """
+        Evaluate an asynchronous code object using a code runner
+
+        Fake asynchronous execution of code_object in a namespace via a proxy namespace.
+
+        Returns coroutine object, which can be executed via async loop runner
+
+        WARNING: The semantics of `async_exec` are quite different from `exec`,
+        in particular you can only pass a single namespace. It also return a
+        handle to the value of the last things returned by code_object.
+        """
+
+        return eval(code_obj, user_ns)
+
+    @asyncio.coroutine
+    def run_code(self, code_obj, result=None, *, async_=False):
         """Execute a code object.
 
         When an exception occurs, self.showtraceback() is called to display a
@@ -2889,6 +3240,8 @@ class InteractiveShell(SingletonConfigurable):
           A compiled code object, to be executed
         result : ExecutionResult, optional
           An object to store exceptions that occur during execution.
+        async_ :  Bool (Experimental)
+          Attempt to run top-level asynchronous code in a default loop.
 
         Returns
         -------
@@ -2906,8 +3259,12 @@ class InteractiveShell(SingletonConfigurable):
         try:
             try:
                 self.hooks.pre_run_code_hook()
-                #rprint('Running code', repr(code_obj)) # dbg
-                exec(code_obj, self.user_global_ns, self.user_ns)
+                if async_:
+                    last_expr = (yield from self._async_exec(code_obj, self.user_ns))
+                    code = compile('last_expr', 'fake', "single")
+                    exec(code, {'last_expr': last_expr})
+                else:
+                    exec(code_obj, self.user_global_ns, self.user_ns)
             finally:
                 # Reset our crash handler in place
                 sys.excepthook = old_excepthook
@@ -2931,6 +3288,26 @@ class InteractiveShell(SingletonConfigurable):
 
     # For backwards compatibility
     runcode = run_code
+
+    def check_complete(self, code: str) -> Tuple[str, str]:
+        """Return whether a block of code is ready to execute, or should be continued
+
+        Parameters
+        ----------
+        source : string
+          Python input code, which can be multiline.
+
+        Returns
+        -------
+        status : str
+          One of 'complete', 'incomplete', or 'invalid' if source is not a
+          prefix of valid code.
+        indent : str
+          When status is 'incomplete', this is some whitespace to insert on
+          the next line of the prompt.
+        """
+        status, nspaces = self.input_transformer_manager.check_complete(code)
+        return status, ' ' * (nspaces or 0)
 
     #-------------------------------------------------------------------------
     # Things related to GUI support and pylab

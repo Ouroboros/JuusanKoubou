@@ -4,8 +4,6 @@
 - ``CachedMetaClass`` uses ``_memoize_default`` to do the same with classes.
 """
 
-import inspect
-
 _NO_DEFAULT = object()
 
 
@@ -40,8 +38,6 @@ def _memoize_default(default=_NO_DEFAULT, evaluator_is_first_arg=False, second_a
                 if default is not _NO_DEFAULT:
                     memo[key] = default
                 rv = function(obj, *args, **kwargs)
-                if inspect.isgenerator(rv):
-                    rv = list(rv)
                 memo[key] = rv
                 return rv
         return wrapper
@@ -63,7 +59,7 @@ def evaluator_method_cache(default=_NO_DEFAULT):
     return decorator
 
 
-def _memoize_meta_class():
+def evaluator_as_method_param_cache():
     def decorator(call):
         return _memoize_default(second_arg_is_evaluator=True)(call)
 
@@ -76,6 +72,6 @@ class CachedMetaClass(type):
     class initializations. Either you do it this way or with decorators, but
     with decorators you lose class access (isinstance, etc).
     """
-    @_memoize_meta_class()
+    @evaluator_as_method_param_cache()
     def __call__(self, *args, **kwargs):
         return super(CachedMetaClass, self).__call__(*args, **kwargs)

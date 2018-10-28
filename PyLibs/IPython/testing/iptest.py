@@ -34,7 +34,7 @@ from nose.plugins import Plugin
 from nose.util import safe_str
 
 from IPython import version_info
-from IPython.utils.py3compat import bytes_to_str
+from IPython.utils.py3compat import decode
 from IPython.utils.importstring import import_item
 from IPython.testing.plugin.ipdoctest import IPythonDoctest
 from IPython.external.decorators import KnownFailure, knownfailureif
@@ -69,7 +69,7 @@ if version_info < (6,):
     warnings.filterwarnings(
         'ignore', message='.*Please use assertEqual instead', category=Warning, module='IPython.*')
 
-if version_info < (7,):
+if version_info < (8,):
     warnings.filterwarnings('ignore', message='.*Completer.complete.*',
                             category=PendingDeprecationWarning, module='.*')
 else:
@@ -299,8 +299,8 @@ class StreamCapturer(Thread):
             with self.buffer_lock:
                 self.buffer.write(chunk)
             if self.echo:
-                sys.stdout.write(bytes_to_str(chunk))
-    
+                sys.stdout.write(decode(chunk))
+
         os.close(self.readfd)
         os.close(self.writefd)
 
@@ -385,6 +385,12 @@ def run_iptest():
     if '--with-xunit' in sys.argv and not hasattr(Xunit, 'orig_addError'):
         monkeypatch_xunit()
 
+    arg1 = sys.argv[1]
+    if arg1.startswith('IPython/'):
+        if arg1.endswith('.py'):
+            arg1 = arg1[:-3]
+        sys.argv[1] = arg1.replace('/', '.')
+    
     arg1 = sys.argv[1]
     if arg1 in test_sections:
         section = test_sections[arg1]

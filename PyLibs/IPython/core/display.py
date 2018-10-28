@@ -238,22 +238,29 @@ def display(*objs, include=None, exclude=None, metadata=None, transient=None, di
     want to use. Here is a list of the names of the special methods and the
     values they must return:
 
-      - `_repr_html_`: return raw HTML as a string
-      - `_repr_json_`: return a JSONable dict
-      - `_repr_jpeg_`: return raw JPEG data
-      - `_repr_png_`: return raw PNG data
-      - `_repr_svg_`: return raw SVG data as a string
-      - `_repr_latex_`: return LaTeX commands in a string surrounded by "$".
+      - `_repr_html_`: return raw HTML as a string, or a tuple (see below).
+      - `_repr_json_`: return a JSONable dict, or a tuple (see below).
+      - `_repr_jpeg_`: return raw JPEG data, or a tuple (see below).
+      - `_repr_png_`: return raw PNG data, or a tuple (see below).
+      - `_repr_svg_`: return raw SVG data as a string, or a tuple (see below).
+      - `_repr_latex_`: return LaTeX commands in a string surrounded by "$",
+                        or a tuple (see below).
       - `_repr_mimebundle_`: return a full mimebundle containing the mapping
                              from all mimetypes to data.
                              Use this for any mime-type not listed above.
+
+    The above functions may also return the object's metadata alonside the
+    data.  If the metadata is available, the functions will return a tuple
+    containing the data and metadata, in that order.  If there is no metadata
+    available, then the functions will return the data only.
 
     When you are directly writing your own classes, you can adapt them for
     display in IPython by following the above approach. But in practice, you
     often need to work with existing classes that you can't easily modify.
 
-    You can refer to the documentation on IPython display formatters in order to
-    register custom formatters for already existing types.
+    You can refer to the documentation on integrating with the display system in
+    order to register custom formatters for already existing types
+    (:ref:`integrating_rich_display`).
 
     .. versionadded:: 5.4 display available without import
     .. versionadded:: 6.1 display available without import
@@ -665,8 +672,25 @@ class Pretty(TextDisplayObject):
 
 class HTML(TextDisplayObject):
 
+    def __init__(self, data=None, url=None, filename=None, metadata=None):
+        def warn():
+            if not data:
+                return False
+
+            #
+            # Avoid calling lower() on the entire data, because it could be a
+            # long string and we're only interested in its beginning and end.
+            #
+            prefix = data[:10].lower()
+            suffix = data[-10:].lower()
+            return prefix.startswith("<iframe ") and suffix.endswith("</iframe>")
+
+        if warn():
+            warnings.warn("Consider using IPython.display.IFrame instead")
+        super(HTML, self).__init__(data=data, url=url, filename=filename, metadata=metadata)
+
     def _repr_html_(self):
-        return self.data
+        return self._data_and_metadata()
 
     def __html__(self):
         """
@@ -680,20 +704,23 @@ class HTML(TextDisplayObject):
 class Markdown(TextDisplayObject):
 
     def _repr_markdown_(self):
-        return self.data
+        return self._data_and_metadata()
 
 
 class Math(TextDisplayObject):
 
     def _repr_latex_(self):
-        s = self.data.strip('$')
-        return "$$%s$$" % s
+        s = r"$\displaystyle %s$" % self.data.strip('$')
+        if self.metadata:
+            return s, deepcopy(self.metadata)
+        else:
+            return s
 
 
 class Latex(TextDisplayObject):
 
     def _repr_latex_(self):
-        return self.data
+        return self._data_and_metadata()
 
 
 class SVG(DisplayObject):
@@ -774,6 +801,19 @@ class ProgressBar(DisplayObject):
         self._progress = value
         self.update()
 
+    def __iter__(self):
+        self.display()
+        self._progress = -1 # First iteration is 0
+        return self
+
+    def __next__(self):
+        """Returns current value and increments display by one."""
+        self.progress += 1
+        if self.progress < self.total:
+            return self.progress
+        else:
+            raise StopIteration()
+
 class JSON(DisplayObject):
     """JSON expects a JSON-able dict or list
 
@@ -783,7 +823,7 @@ class JSON(DisplayObject):
     """
     # wrap data in a property, which warns about passing already-serialized JSON
     _data = None
-    def __init__(self, data=None, url=None, filename=None, expanded=False, metadata=None, **kwargs):
+    def __init__(self, data=None, url=None, filename=None, expanded=False, metadata=None, root='root', **kwargs):
         """Create a JSON display object given raw data.
 
         Parameters
@@ -800,8 +840,13 @@ class JSON(DisplayObject):
             Metadata to control whether a JSON display component is expanded.
         metadata: dict
             Specify extra metadata to attach to the json display object.
+        root : str
+            The name of the root element of the JSON tree 
         """
-        self.metadata = {'expanded': expanded}
+        self.metadata = {
+            'expanded': expanded,
+            'root': root,
+        }
         if metadata:
             self.metadata.update(metadata)
         if kwargs:
@@ -830,17 +875,24 @@ class JSON(DisplayObject):
     def _repr_json_(self):
         return self._data_and_metadata()
 
-_css_t = """$("head").append($("<link/>").attr({
-  rel:  "stylesheet",
-  type: "text/css",
-  href: "%s"
-}));
+_css_t = """var link = document.createElement("link");
+	link.ref = "stylesheet";
+	link.type = "text/css";
+	link.href = "%s";
+	document.head.appendChild(link);
 """
 
-_lib_t1 = """$.getScript("%s", function () {
+_lib_t1 = """new Promise(function(resolve, reject) {
+	var script = document.createElement("script");
+	script.onload = resolve;
+	script.onerror = reject;
+	script.src = "%s";
+	document.head.appendChild(script);
+}).then(() => {
 """
-_lib_t2 = """});
-"""
+
+_lib_t2 = """
+});"""
 
 class GeoJSON(JSON):
     """GeoJSON expects JSON-able dict
@@ -1098,9 +1150,9 @@ class Image(DisplayObject):
             if ext is not None:
                 if ext == u'jpg' or ext == u'jpeg':
                     format = self._FMT_JPEG
-                if ext == u'png':
+                elif ext == u'png':
                     format = self._FMT_PNG
-                if ext == u'gif':
+                elif ext == u'gif':
                     format = self._FMT_GIF
                 else:
                     format = ext.lower()
@@ -1227,7 +1279,8 @@ class Image(DisplayObject):
 
 class Video(DisplayObject):
 
-    def __init__(self, data=None, url=None, filename=None, embed=False, mimetype=None):
+    def __init__(self, data=None, url=None, filename=None, embed=False,
+                 mimetype=None, width=None, height=None):
         """Create a video object given raw data or an URL.
 
         When this object is returned by an input cell or passed to the
@@ -1259,6 +1312,12 @@ class Video(DisplayObject):
         mimetype: unicode
             Specify the mimetype for embedded videos.
             Default will be guessed from file extension, if available.
+        width : int
+            Width in pixels to which to constrain the video in HTML.
+            If not supplied, defaults to the width of the video.
+        height : int
+            Height in pixels to which to constrain the video in html.
+            If not supplied, defaults to the height of the video.
 
         Examples
         --------
@@ -1285,16 +1344,24 @@ class Video(DisplayObject):
 
         self.mimetype = mimetype
         self.embed = embed
+        self.width = width
+        self.height = height
         super(Video, self).__init__(data=data, url=url, filename=filename)
 
     def _repr_html_(self):
+        width = height = ''
+        if self.width:
+            width = ' width="%d"' % self.width
+        if self.height:
+            height = ' height="%d"' % self.height
+
         # External URLs and potentially local files are not embedded into the
         # notebook output.
         if not self.embed:
             url = self.url if self.url is not None else self.filename
-            output = """<video src="{0}" controls>
+            output = """<video src="{0}" controls {1} {2}>
       Your browser does not support the <code>video</code> element.
-    </video>""".format(url)
+    </video>""".format(url, width, height)
             return output
 
         # Embedded videos are base64-encoded.
@@ -1313,10 +1380,10 @@ class Video(DisplayObject):
         else:
             b64_video = b2a_base64(video).decode('ascii').rstrip()
 
-        output = """<video controls>
- <source src="data:{0};base64,{1}" type="{0}">
+        output = """<video controls {0} {1}>
+ <source src="data:{2};base64,{3}" type="{2}">
  Your browser does not support the video tag.
- </video>""".format(mimetype, b64_video)
+ </video>""".format(width, height, mimetype, b64_video)
         return output
 
     def reload(self):

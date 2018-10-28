@@ -26,7 +26,7 @@ This module is certainly not ZODB, but can be used for low-load
 (non-mission-critical) situations where tiny code size trumps the
 advanced features of a "real" object database.
 
-Installation guide: pip install path pickleshare
+Installation guide: pip install pickleshare
 
 Author: Ville Vainio <vivainio@gmail.com>
 License: MIT open source license.
@@ -36,7 +36,7 @@ License: MIT open source license.
 from __future__ import print_function
 
 
-__version__ = "0.7.4"
+__version__ = "0.7.5"
 
 try:
     from pathlib import Path
@@ -45,7 +45,10 @@ except ImportError:
     from pathlib2 import Path
 
 import os,stat,time
-import collections
+try:
+    import collections.abc as collections_abc
+except ImportError:
+    import collections as collections_abc
 try:
     import cPickle as pickle
 except ImportError:
@@ -63,7 +66,7 @@ def gethashfile(key):
 
 _sentinel = object()
 
-class PickleShareDB(collections.MutableMapping):
+class PickleShareDB(collections_abc.MutableMapping):
     """ The main 'connection' object for PickleShare database """
     def __init__(self,root):
         """ Return a db object that will manage the specied directory"""

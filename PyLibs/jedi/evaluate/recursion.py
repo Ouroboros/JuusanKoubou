@@ -29,6 +29,7 @@ therefore the quality might not always be maximal.
 from contextlib import contextmanager
 
 from jedi import debug
+from jedi.evaluate.base_context import NO_CONTEXTS
 
 
 recursion_limit = 15
@@ -48,6 +49,7 @@ per_function_recursion_limit = 2
 A function may not be executed more than this number of times recursively.
 """
 
+
 class RecursionDetector(object):
     def __init__(self):
         self.pushed_nodes = []
@@ -63,24 +65,26 @@ def execution_allowed(evaluator, node):
 
     if node in pushed_nodes:
         debug.warning('catched stmt recursion: %s @%s', node,
-                      node.start_pos)
+                      getattr(node, 'start_pos', None))
         yield False
     else:
-        pushed_nodes.append(node)
-        yield True
-        pushed_nodes.pop()
+        try:
+            pushed_nodes.append(node)
+            yield True
+        finally:
+            pushed_nodes.pop()
 
 
-def execution_recursion_decorator(default=set()):
+def execution_recursion_decorator(default=NO_CONTEXTS):
     def decorator(func):
-        def wrapper(execution, **kwargs):
-            detector = execution.evaluator.execution_recursion_detector
-            allowed = detector.push_execution(execution)
+        def wrapper(self, **kwargs):
+            detector = self.evaluator.execution_recursion_detector
+            allowed = detector.push_execution(self)
             try:
                 if allowed:
                     result = default
                 else:
-                    result = func(execution, **kwargs)
+                    result = func(self, **kwargs)
             finally:
                 detector.pop_execution()
             return result
@@ -112,7 +116,7 @@ class ExecutionRecursionDetector(object):
         self._parent_execution_funcs.append(funcdef)
 
         module = execution.get_root_context()
-        if module == self._evaluator.BUILTINS:
+        if module == self._evaluator.builtins_module:
             # We have control over builtins so we know they are not recursing
             # like crazy. Therefore we just let them execute always, because
             # they usually just help a lot with getting good results.

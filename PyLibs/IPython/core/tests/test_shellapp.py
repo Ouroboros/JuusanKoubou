@@ -24,7 +24,7 @@ sqlite_err_maybe = dec.module_not_available('sqlite3')
 SQLITE_NOT_AVAILABLE_ERROR = ('WARNING: IPython History requires SQLite,'
                               ' your history will not be saved\n')
 
-class TestFileToRun(unittest.TestCase, tt.TempFileMixin):
+class TestFileToRun(tt.TempFileMixin, unittest.TestCase):
     """Test the behavior of the file_to_run parameter."""
 
     def test_py_script_file_attribute(self):
@@ -52,5 +52,9 @@ class TestFileToRun(unittest.TestCase, tt.TempFileMixin):
         self.mktmp(src)
 
         out, err = tt.ipexec(self.fname, options=['-i'],
-                           commands=['"__file__" in globals()', 'exit()'])
-        self.assertIn("False", out)
+                           commands=['"__file__" in globals()', 'print(123)', 'exit()'])
+        if 'False' not in out:
+            print("Subprocess stderr:")
+            print(err)
+            print('-----')
+            raise AssertionError("'False' not found in %r" % out)

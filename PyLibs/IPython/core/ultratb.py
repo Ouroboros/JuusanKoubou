@@ -116,12 +116,14 @@ from IPython.core import debugger
 from IPython.core.display_trap import DisplayTrap
 from IPython.core.excolors import exception_colors
 from IPython.utils import PyColorize
-from IPython.utils import openpy
 from IPython.utils import path as util_path
 from IPython.utils import py3compat
 from IPython.utils.data import uniq_stable
 from IPython.utils.terminal import get_terminal_size
-from logging import info, error
+
+from logging import info, error, debug
+
+from importlib.util import source_from_cache
 
 import IPython.utils.colorable as colorable
 
@@ -374,16 +376,32 @@ def _fixed_getinnerframes(etb, context=1, tb_offset=0):
 # (SyntaxErrors have to be treated specially because they have no traceback)
 
 
-def _format_traceback_lines(lnum, index, lines, Colors, lvals=None,  _line_format=(lambda x,_:x,None)):
+def _format_traceback_lines(lnum, index, lines, Colors, lvals, _line_format):
+    """
+    Format tracebacks lines with pointing arrow, leading numbers...
+
+    Parameters
+    ==========
+
+    lnum: int
+    index: int
+    lines: list[string]
+    Colors:
+        ColorScheme used.
+    lvals: bytes
+        Values of local variables, already colored, to inject just after the error line.
+    _line_format: f (str) -> (str, bool)
+        return (colorized version of str, failure to do so)
+    """
     numbers_width = INDENT_SIZE - 1
     res = []
-    i = lnum - index
 
-    for line in lines:
+    for i,line in enumerate(lines, lnum-index):
         line = py3compat.cast_unicode(line)
 
         new_line, err = _line_format(line, 'str')
-        if not err: line = new_line
+        if not err:
+            line = new_line
 
         if i == lnum:
             # This is the line with the error
@@ -399,7 +417,6 @@ def _format_traceback_lines(lnum, index, lines, Colors, lvals=None,  _line_forma
         res.append(line)
         if lvals and i == lnum:
             res.append(lvals + '\n')
-        i = i + 1
     return res
 
 def is_recursion_error(etype, value, records):
@@ -621,16 +638,6 @@ class ListTB(TBTools):
         lines = ''.join(self._format_exception_only(etype, value))
         out_list.append(lines)
 
-        # Note: this code originally read:
-
-        ## for line in lines[:-1]:
-        ##     out_list.append(" "+line)
-        ## out_list.append(lines[-1])
-
-        # This means it was indenting everything but the last line by a little
-        # bit.  I've disabled this for now, but if we see ugliness somewhere we
-        # can restore it.
-
         return out_list
 
     def _format_list(self, extracted_list):
@@ -841,13 +848,6 @@ class VerboseTB(TBTools):
                                                  Colors.vName, ColorsNormal)
         tpl_name_val = '%%s %s= %%s%s' % (Colors.valEm, ColorsNormal)
 
-        tpl_line = '%s%%s%s %%s' % (Colors.lineno, ColorsNormal)
-        tpl_line_em = '%s%%s%s %%s%s' % (Colors.linenoEm, Colors.line,
-                                         ColorsNormal)
-
-        abspath = os.path.abspath
-
-
         if not file:
             file = '?'
         elif file.startswith(str("<")) and file.endswith(str(">")):
@@ -869,17 +869,19 @@ class VerboseTB(TBTools):
 
         file = py3compat.cast_unicode(file, util_path.fs_encoding)
         link = tpl_link % util_path.compress_user(file)
-        args, varargs, varkw, locals = inspect.getargvalues(frame)
+        args, varargs, varkw, locals_ = inspect.getargvalues(frame)
 
         if func == '?':
             call = ''
+        elif func == '<module>':
+            call = tpl_call % (func, '')
         else:
             # Decide whether to include variable details or not
-            var_repr = self.include_vars and eqrepr or nullrepr
+            var_repr = eqrepr if self.include_vars else nullrepr
             try:
                 call = tpl_call % (func, inspect.formatargvalues(args,
                                                                  varargs, varkw,
-                                                                 locals, formatvalue=var_repr))
+                                                                 locals_, formatvalue=var_repr))
             except KeyError:
                 # This happens in situations like errors inside generator
                 # expressions, where local variables are listed in the
@@ -906,7 +908,7 @@ class VerboseTB(TBTools):
         elif file.endswith(('.pyc', '.pyo')):
             # Look up the corresponding source file.
             try:
-                file = openpy.source_from_cache(file)
+                file = source_from_cache(file)
             except ValueError:
                 # Failed to get the source file for some reason
                 # E.g. https://github.com/ipython/ipython/issues/9486
@@ -952,10 +954,15 @@ class VerboseTB(TBTools):
             #  - see gh-6300
             pass
         except tokenize.TokenError as msg:
+            # Tokenizing may fail for various reasons, many of which are
+            # harmless. (A good example is when the line in question is the
+            # close of a triple-quoted string, cf gh-6864). We don't want to
+            # show this to users, but want make it available for debugging
+            # purposes.
             _m = ("An unexpected error occurred while tokenizing input\n"
                   "The following traceback may be corrupted or invalid\n"
                   "The error message is: %s\n" % msg)
-            error(_m)
+            debug(_m)
 
         # Join composite names (e.g. "dict.fromkeys")
         names = ['.'.join(n) for n in names]
@@ -963,14 +970,15 @@ class VerboseTB(TBTools):
         unique_names = uniq_stable(names)
 
         # Start loop over vars
-        lvals = []
+        lvals = ''
+        lvals_list = []
         if self.include_vars:
             for name_full in unique_names:
                 name_base = name_full.split('.', 1)[0]
                 if name_base in frame.f_code.co_varnames:
-                    if name_base in locals:
+                    if name_base in locals_:
                         try:
-                            value = repr(eval(name_full, locals))
+                            value = repr(eval(name_full, locals_))
                         except:
                             value = undefined
                     else:
@@ -985,11 +993,9 @@ class VerboseTB(TBTools):
                     else:
                         value = undefined
                     name = tpl_global_var % name_full
-                lvals.append(tpl_name_val % (name, value))
-        if lvals:
-            lvals = '%s%s' % (indent, em_normal.join(lvals))
-        else:
-            lvals = ''
+                lvals_list.append(tpl_name_val % (name, value))
+        if lvals_list:
+            lvals = '%s%s' % (indent, em_normal.join(lvals_list))
 
         level = '%s %s\n' % (link, call)
 
@@ -1036,7 +1042,6 @@ class VerboseTB(TBTools):
     def format_exception(self, etype, evalue):
         colors = self.Colors  # just a shorthand + quicker name lookup
         colorsnormal = colors.Normal  # used a lot
-        indent = ' ' * INDENT_SIZE
         # Get (safely) a string form of the exception info
         try:
             etype_str, evalue_str = map(str, (etype, evalue))
@@ -1131,35 +1136,32 @@ class VerboseTB(TBTools):
         colorsnormal = colors.Normal  # used a lot
         head = '%s%s%s' % (colors.topline, '-' * min(75, get_terminal_size()[0]), colorsnormal)
         structured_traceback_parts = [head]
-        if py3compat.PY3:
-            chained_exceptions_tb_offset = 0
-            lines_of_context = 3
-            formatted_exceptions = formatted_exception
+        chained_exceptions_tb_offset = 0
+        lines_of_context = 3
+        formatted_exceptions = formatted_exception
+        exception = self.get_parts_of_chained_exception(evalue)
+        if exception:
+            formatted_exceptions += self.prepare_chained_exception_message(evalue.__cause__)
+            etype, evalue, etb = exception
+        else:
+            evalue = None
+        chained_exc_ids = set()
+        while evalue:
+            formatted_exceptions += self.format_exception_as_a_whole(etype, evalue, etb, lines_of_context,
+                                                                     chained_exceptions_tb_offset)
             exception = self.get_parts_of_chained_exception(evalue)
-            if exception:
+
+            if exception and not id(exception[1]) in chained_exc_ids:
+                chained_exc_ids.add(id(exception[1])) # trace exception to avoid infinite 'cause' loop
                 formatted_exceptions += self.prepare_chained_exception_message(evalue.__cause__)
                 etype, evalue, etb = exception
             else:
                 evalue = None
-            chained_exc_ids = set()
-            while evalue:
-                formatted_exceptions += self.format_exception_as_a_whole(etype, evalue, etb, lines_of_context,
-                                                                         chained_exceptions_tb_offset)
-                exception = self.get_parts_of_chained_exception(evalue)
 
-                if exception and not id(exception[1]) in chained_exc_ids:
-                    chained_exc_ids.add(id(exception[1])) # trace exception to avoid infinite 'cause' loop
-                    formatted_exceptions += self.prepare_chained_exception_message(evalue.__cause__)
-                    etype, evalue, etb = exception
-                else:
-                    evalue = None
-
-            # we want to see exceptions in a reversed order:
-            # the first exception should be on top
-            for formatted_exception in reversed(formatted_exceptions):
-                structured_traceback_parts += formatted_exception
-        else:
-            structured_traceback_parts += formatted_exception[0]
+        # we want to see exceptions in a reversed order:
+        # the first exception should be on top
+        for formatted_exception in reversed(formatted_exceptions):
+            structured_traceback_parts += formatted_exception
 
         return structured_traceback_parts
 
@@ -1201,7 +1203,7 @@ class VerboseTB(TBTools):
                 if etb and etb.tb_next:
                     etb = etb.tb_next
                 self.pdb.botframe = etb.tb_frame
-                self.pdb.interaction(self.tb.tb_frame, self.tb)
+                self.pdb.interaction(None, etb)
 
         if hasattr(self, 'tb'):
             del self.tb

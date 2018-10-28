@@ -11,6 +11,7 @@ import nose.tools as nt
 
 from IPython.core import display
 from IPython.core.getipython import get_ipython
+from IPython.utils.io import capture_output
 from IPython.utils.tempdir import NamedFileInTemporaryDirectory
 from IPython import paths as ipath
 from IPython.testing.tools import AssertPrints, AssertNotPrints
@@ -194,41 +195,77 @@ def test_displayobject_repr():
     j._show_mem_addr = False
     nt.assert_equal(repr(j), '<IPython.core.display.Javascript object>')
 
+@mock.patch('warnings.warn')
+def test_encourage_iframe_over_html(m_warn):
+    display.HTML()
+    m_warn.assert_not_called()
+
+    display.HTML('<br />')
+    m_warn.assert_not_called()
+
+    display.HTML('<html><p>Lots of content here</p><iframe src="http://a.com"></iframe>')
+    m_warn.assert_not_called()
+
+    display.HTML('<iframe src="http://a.com"></iframe>')
+    m_warn.assert_called_with('Consider using IPython.display.IFrame instead')
+
+    m_warn.reset_mock()
+    display.HTML('<IFRAME SRC="http://a.com"></IFRAME>')
+    m_warn.assert_called_with('Consider using IPython.display.IFrame instead')
+
 def test_progress():
     p = display.ProgressBar(10)
-    nt.assert_true('0/10' in repr(p))
+    nt.assert_in('0/10',repr(p))
     p.html_width = '100%'
     p.progress = 5
     nt.assert_equal(p._repr_html_(), "<progress style='width:100%' max='10' value='5'></progress>")
 
+def test_progress_iter():
+    with capture_output(display=False) as captured:
+        for i in display.ProgressBar(5):
+            out = captured.stdout
+            nt.assert_in('{0}/5'.format(i), out)
+    out = captured.stdout
+    nt.assert_in('5/5', out)
+
 def test_json():
     d = {'a': 5}
     lis = [d]
-    md = {'expanded': False}
-    md2 = {'expanded': True}
-    j = display.JSON(d)
-    j2 = display.JSON(d, expanded=True)
-    nt.assert_equal(j._repr_json_(), (d, md))
-    nt.assert_equal(j2._repr_json_(), (d, md2))
+    metadata = [
+        {'expanded': False, 'root': 'root'},
+        {'expanded': True,  'root': 'root'},
+        {'expanded': False, 'root': 'custom'},
+        {'expanded': True,  'root': 'custom'},
+    ]
+    json_objs = [
+        display.JSON(d),
+        display.JSON(d, expanded=True),
+        display.JSON(d, root='custom'),
+        display.JSON(d, expanded=True, root='custom'),
+    ]
+    for j, md in zip(json_objs, metadata):
+        nt.assert_equal(j._repr_json_(), (d, md))
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         j = display.JSON(json.dumps(d))
         nt.assert_equal(len(w), 1)
-        nt.assert_equal(j._repr_json_(), (d, md))
-        nt.assert_equal(j2._repr_json_(), (d, md2))
+        nt.assert_equal(j._repr_json_(), (d, metadata[0]))
 
-    j = display.JSON(lis)
-    j2 = display.JSON(lis, expanded=True)
-    nt.assert_equal(j._repr_json_(), (lis, md))
-    nt.assert_equal(j2._repr_json_(), (lis, md2))
+    json_objs = [
+        display.JSON(lis),
+        display.JSON(lis, expanded=True),
+        display.JSON(lis, root='custom'),
+        display.JSON(lis, expanded=True, root='custom'),
+    ]
+    for j, md in zip(json_objs, metadata):
+        nt.assert_equal(j._repr_json_(), (lis, md))
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         j = display.JSON(json.dumps(lis))
         nt.assert_equal(len(w), 1)
-        nt.assert_equal(j._repr_json_(), (lis, md))
-        nt.assert_equal(j2._repr_json_(), (lis, md2))
+        nt.assert_equal(j._repr_json_(), (lis, metadata[0]))
 
 def test_video_embedding():
     """use a tempfile, with dummy-data, to ensure that video embedding doesn't crash"""
@@ -266,6 +303,10 @@ def test_video_embedding():
         html = v._repr_html_()
         nt.assert_in('src="data:video/xyz;base64,YWJj"',html)
 
+def test_html_metadata():
+    s = "<h1>Test</h1>"
+    h = display.HTML(s, metadata={"isolated": True})
+    nt.assert_equal(h._repr_html_(), (s, {"isolated": True}))
 
 def test_display_id():
     ip = get_ipython()

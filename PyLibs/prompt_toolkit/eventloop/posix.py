@@ -2,22 +2,18 @@ from __future__ import unicode_literals
 import fcntl
 import os
 import signal
-import threading
 import time
 
-from prompt_toolkit.terminal.vt100_input import InputStream
-from prompt_toolkit.utils import DummyContext, in_main_thread
-from prompt_toolkit.input import Input
-from .base import EventLoop, INPUT_TIMEOUT
-from .callbacks import EventLoopCallbacks
+from .base import EventLoop
+from .future import Future
 from .inputhook import InputHookContext
-from .posix_utils import PosixStdinReader
-from .utils import TimeIt
 from .select import AutoSelector, Selector, fd_to_int
+from .utils import ThreadWithFuture
+from .context import wrap_in_current_context
 
-__all__ = (
+__all__ = [
     'PosixEventLoop',
-)
+]
 
 _now = time.time
 
@@ -26,160 +22,140 @@ class PosixEventLoop(EventLoop):
     """
     Event loop for posix systems (Linux, Mac os X).
     """
-    def __init__(self, inputhook=None, selector=AutoSelector):
-        assert inputhook is None or callable(inputhook)
+    def __init__(self, selector=AutoSelector):
         assert issubclass(selector, Selector)
 
-        self.running = False
+        super(PosixEventLoop, self).__init__()
+
         self.closed = False
         self._running = False
-        self._callbacks = None
 
         self._calls_from_executor = []
-        self._read_fds = {} # Maps fd to handler.
+        self._read_fds = {}  # Maps fd to handler.
         self.selector = selector()
+
+        self._signal_handler_mappings = {}  # signal: previous_handler
 
         # Create a pipe for inter thread communication.
         self._schedule_pipe = os.pipe()
         fcntl.fcntl(self._schedule_pipe[0], fcntl.F_SETFL, os.O_NONBLOCK)
+        self.selector.register(self._schedule_pipe[0])
 
         # Create inputhook context.
-        self._inputhook_context = InputHookContext(inputhook) if inputhook else None
+        self._inputhook_context = None
 
-    def run(self, stdin, callbacks):
+    def run_until_complete(self, future, inputhook=None):
         """
-        The input 'event loop'.
+        Keep running the event loop until `future` has been set.
+
+        :param future: :class:`prompt_toolkit.eventloop.future.Future` object.
         """
-        assert isinstance(stdin, Input)
-        assert isinstance(callbacks, EventLoopCallbacks)
-        assert not self._running
+        assert isinstance(future, Future)
+        assert inputhook is None or callable(inputhook)
+
+        if self._running:
+            raise Exception('Event loop is already running')
 
         if self.closed:
             raise Exception('Event loop already closed.')
 
-        self._running = True
-        self._callbacks = callbacks
+        try:
+            self._running = True
 
-        inputstream = InputStream(callbacks.feed_key)
-        current_timeout = [INPUT_TIMEOUT]  # Nonlocal
+            while not future.done():
+                self._run_once(inputhook)
 
-        # Create reader class.
-        stdin_reader = PosixStdinReader(stdin.fileno())
+            # Run one last time, to flush the pending `_calls_from_executor`s.
+            if self._calls_from_executor:
+                self._run_once(inputhook)
 
-        # Only attach SIGWINCH signal handler in main thread.
-        # (It's not possible to attach signal handlers in other threads. In
-        # that case we should rely on a the main thread to call this manually
-        # instead.)
-        if in_main_thread():
-            ctx = call_on_sigwinch(self.received_winch)
-        else:
-            ctx = DummyContext()
+        finally:
+            self._running = False
 
-        def read_from_stdin():
-            " Read user input. "
-            # Feed input text.
-            data = stdin_reader.read()
-            inputstream.feed(data)
+    def _run_once(self, inputhook):
+        # Call inputhook.
+        if inputhook:
+            # Create input hook context.
+            if self._inputhook_context is None:
+                self._inputhook_context = InputHookContext()
 
-            # Set timeout again.
-            current_timeout[0] = INPUT_TIMEOUT
+            def ready(wait):
+                " True when there is input ready. The inputhook should return control. "
+                return self._ready_for_reading(None if wait else 0) != []
+            self._inputhook_context.call_inputhook(ready, inputhook)
 
-            # Quit when the input stream was closed.
-            if stdin_reader.closed:
-                self.stop()
+        # Wait until input is ready.
+        fds = self._ready_for_reading(None)
 
-        self.add_reader(stdin, read_from_stdin)
-        self.add_reader(self._schedule_pipe[0], None)
+        # When any of the FDs are ready. Call the appropriate callback.
+        if fds:
+            # Create lists of high/low priority tasks. The main reason for this
+            # is to allow painting the UI to happen as soon as possible, but
+            # when there are many events happening, we don't want to call the
+            # UI renderer 1000x per second. If the eventloop is completely
+            # saturated with many CPU intensive tasks (like processing
+            # input/output), we say that drawing the UI can be postponed a
+            # little, to make CPU available. This will be a low priority task
+            # in that case.
+            tasks = []
+            low_priority_tasks = []
+            now = None  # Lazy load time. (Fewer system calls.)
 
-        with ctx:
-            while self._running:
-                # Call inputhook.
-                if self._inputhook_context:
-                    with TimeIt() as inputhook_timer:
-                        def ready(wait):
-                            " True when there is input ready. The inputhook should return control. "
-                            return self._ready_for_reading(current_timeout[0] if wait else 0) != []
-                        self._inputhook_context.call_inputhook(ready)
-                    inputhook_duration = inputhook_timer.duration
-                else:
-                    inputhook_duration = 0
+            for fd in fds:
+                # For the 'call_from_executor' fd, put each pending
+                # item on either the high or low priority queue.
+                if fd == self._schedule_pipe[0]:
+                    # Flush all the pipe content.
+                    os.read(self._schedule_pipe[0], 1024)
 
-                # Calculate remaining timeout. (The inputhook consumed some of the time.)
-                if current_timeout[0] is None:
-                    remaining_timeout = None
-                else:
-                    remaining_timeout = max(0, current_timeout[0] - inputhook_duration)
+                    calls_from_executor = self._calls_from_executor[:]
+                    del self._calls_from_executor[:]
 
-                # Wait until input is ready.
-                fds = self._ready_for_reading(remaining_timeout)
-
-                # When any of the FDs are ready. Call the appropriate callback.
-                if fds:
-                    # Create lists of high/low priority tasks. The main reason
-                    # for this is to allow painting the UI to happen as soon as
-                    # possible, but when there are many events happening, we
-                    # don't want to call the UI renderer 1000x per second. If
-                    # the eventloop is completely saturated with many CPU
-                    # intensive tasks (like processing input/output), we say
-                    # that drawing the UI can be postponed a little, to make
-                    # CPU available. This will be a low priority task in that
-                    # case.
-                    tasks = []
-                    low_priority_tasks = []
-                    now = None  # Lazy load time. (Fewer system calls.)
-
-                    for fd in fds:
-                        # For the 'call_from_executor' fd, put each pending
-                        # item on either the high or low priority queue.
-                        if fd == self._schedule_pipe[0]:
-                            for c, max_postpone_until in self._calls_from_executor:
-                                if max_postpone_until is None:
-                                    # Execute now.
-                                    tasks.append(c)
-                                else:
-                                    # Execute soon, if `max_postpone_until` is in the future.
-                                    now = now or _now()
-                                    if max_postpone_until < now:
-                                        tasks.append(c)
-                                    else:
-                                        low_priority_tasks.append((c, max_postpone_until))
-                            self._calls_from_executor = []
-
-                            # Flush all the pipe content.
-                            os.read(self._schedule_pipe[0], 1024)
+                    for c, max_postpone_until in calls_from_executor:
+                        if max_postpone_until is None:
+                            # Execute now.
+                            tasks.append(c)
                         else:
-                            handler = self._read_fds.get(fd)
-                            if handler:
-                                tasks.append(handler)
-
-                    # When there are high priority tasks, run all these.
-                    # Schedule low priority tasks for the next iteration.
-                    if tasks:
-                        for t in tasks:
-                            t()
-
-                        # Postpone low priority tasks.
-                        for t, max_postpone_until in low_priority_tasks:
-                            self.call_from_executor(t, _max_postpone_until=max_postpone_until)
-                    else:
-                        # Currently there are only low priority tasks -> run them right now.
-                        for t, _ in low_priority_tasks:
-                            t()
-
+                            # Execute soon, if `max_postpone_until` is in the future.
+                            now = now or _now()
+                            if max_postpone_until < now:
+                                tasks.append(c)
+                            else:
+                                low_priority_tasks.append((c, max_postpone_until))
                 else:
-                    # Flush all pending keys on a timeout. (This is most
-                    # important to flush the vt100 'Escape' key early when
-                    # nothing else follows.)
-                    inputstream.flush()
+                    handler = self._read_fds.get(fd)
+                    if handler:
+                        tasks.append(handler)
 
-                    # Fire input timeout event.
-                    callbacks.input_timeout()
-                    current_timeout[0] = None
+            # When there are high priority tasks, run all these.
+            # Schedule low priority tasks for the next iteration.
+            if tasks:
+                for t in tasks:
+                    self._run_task(t)
 
-        self.remove_reader(stdin)
-        self.remove_reader(self._schedule_pipe[0])
+                # Postpone low priority tasks.
+                for t, max_postpone_until in low_priority_tasks:
+                    self.call_from_executor(t, _max_postpone_until=max_postpone_until)
+            else:
+                # Currently there are only low priority tasks -> run them right now.
+                for t, _ in low_priority_tasks:
+                    self._run_task(t)
 
-        self._callbacks = None
+    def _run_task(self, t):
+        """
+        Run a task in the event loop. If it fails, print the exception.
+
+        By default, the event loop is not supposed to exit if one fd callback
+        raises an exception. Doing so, would leave many coroutines in a not
+        cleaned-up state. If this happens, this is a bug, and we have to print
+        the stack.
+        """
+        try:
+            t()
+        except BaseException as e:
+            self.call_exception_handler({
+                'exception': e
+            })
 
     def _ready_for_reading(self, timeout=None):
         """
@@ -188,30 +164,49 @@ class PosixEventLoop(EventLoop):
         fds = self.selector.select(timeout)
         return fds
 
-    def received_winch(self):
+    def add_signal_handler(self, signum, handler):
         """
-        Notify the event loop that SIGWINCH has been received
+        Register a signal handler. Call `handler` when `signal` was received.
+        The given handler will always be called in the same thread as the
+        eventloop. (Like `call_from_executor`.)
         """
-        # Process signal asynchronously, because this handler can write to the
-        # output, and doing this inside the signal handler causes easily
-        # reentrant calls, giving runtime errors..
+        # Always process signals asynchronously, because these handlers can
+        # write to the output, and doing this inside the signal handler causes
+        # easily reentrant calls, giving runtime errors.
 
-        # Furthur, this has to be thread safe. When the CommandLineInterface
-        # runs not in the main thread, this function still has to be called
-        # from the main thread. (The only place where we can install signal
-        # handlers.)
-        def process_winch():
-            if self._callbacks:
-                self._callbacks.terminal_size_changed()
+        # Further, this has to be thread safe. When the Application runs not in
+        # the main thread, this function will still be called from the main
+        # thread. (The only place where we can install signal handlers.)
 
-        self.call_from_executor(process_winch)
+        if handler is None:
+            # Normally, `signal.signal` should never return `None`. For some
+            # reason it happens here:
+            # https://github.com/jonathanslenders/python-prompt-toolkit/pull/174
+            handler = 0
 
-    def run_in_executor(self, callback):
+        if handler in (signal.SIG_IGN, 0):
+            # Clear handler.
+            previous = signal.signal(signum, handler)
+            self._signal_handler_mappings[signum] = handler
+        else:
+            # Set handler.
+            def call_signal_handler(*a):
+                self.call_from_executor(handler)
+
+            previous = signal.signal(signum, call_signal_handler)
+            self._signal_handler_mappings[signum] = handler
+
+        # Return the previous signal handler.
+        return self._signal_handler_mappings.get(signum, previous)
+
+    def run_in_executor(self, callback, _daemon=False):
         """
         Run a long running function in a background thread.
         (This is recommended for code that could block the event loop.)
         Similar to Twisted's ``deferToThread``.
         """
+        th = ThreadWithFuture(callback, daemon=_daemon)
+
         # Wait until the main thread is idle.
         # We start the thread by using `call_from_executor`. The event loop
         # favours processing input over `calls_from_executor`, so the thread
@@ -219,23 +214,25 @@ class PosixEventLoop(EventLoop):
         # thread becomes idle for an instant. This is good, because Python
         # threading favours CPU over I/O -- an autocompletion thread in the
         # background would cause a significantly slow down of the main thread.
-        # It is mostly noticable when pasting large portions of text while
+        # It is mostly noticeable when pasting large portions of text while
         # having real time autocompletion while typing on.
-        def start_executor():
-            threading.Thread(target=callback).start()
-        self.call_from_executor(start_executor)
+        self.call_from_executor(th.start)
+
+        return th.future
 
     def call_from_executor(self, callback, _max_postpone_until=None):
         """
         Call this function in the main event loop.
         Similar to Twisted's ``callFromThread``.
 
-        :param _max_postpone_until: `None` or `time.time` value. For interal
+        :param _max_postpone_until: `None` or `time.time` value. For internal
             use. If the eventloop is saturated, consider this task to be low
             priority and postpone maximum until this timestamp. (For instance,
             repaint is done using low priority.)
         """
         assert _max_postpone_until is None or isinstance(_max_postpone_until, float)
+        callback = wrap_in_current_context(callback)
+
         self._calls_from_executor.append((callback, _max_postpone_until))
 
         if self._schedule_pipe:
@@ -248,13 +245,11 @@ class PosixEventLoop(EventLoop):
                 #   main thread could have closed the pipe already.
                 pass
 
-    def stop(self):
-        """
-        Stop the event loop.
-        """
-        self._running = False
-
     def close(self):
+        """
+        Close the event loop. The loop must not be running.
+        """
+        assert not self._running
         self.closed = True
 
         # Close pipes.
@@ -270,6 +265,8 @@ class PosixEventLoop(EventLoop):
 
     def add_reader(self, fd, callback):
         " Add read file descriptor to the event loop. "
+        callback = wrap_in_current_context(callback)
+
         fd = fd_to_int(fd)
         self._read_fds[fd] = callback
         self.selector.register(fd)
@@ -282,25 +279,3 @@ class PosixEventLoop(EventLoop):
             del self._read_fds[fd]
 
         self.selector.unregister(fd)
-
-
-class call_on_sigwinch(object):
-    """
-    Context manager which Installs a SIGWINCH callback.
-    (This signal occurs when the terminal size changes.)
-    """
-    def __init__(self, callback):
-        self.callback = callback
-        self.previous_callback = None
-
-    def __enter__(self):
-        self.previous_callback = signal.signal(signal.SIGWINCH, lambda *a: self.callback())
-
-    def __exit__(self, *a, **kw):
-        if self.previous_callback is None:
-            # Normally, `signal.signal` should never return `None`.
-            # For some reason it happens here:
-            # https://github.com/jonathanslenders/python-prompt-toolkit/pull/174
-            signal.signal(signal.SIGWINCH, 0)
-        else:
-            signal.signal(signal.SIGWINCH, self.previous_callback)

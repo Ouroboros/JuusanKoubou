@@ -16,6 +16,7 @@ import sys
 import time
 import timeit
 import math
+import re
 from pdb import Restart
 
 # cProfile was added in Python2.5
@@ -108,7 +109,6 @@ class TimeitResult(object):
     def _repr_pretty_(self, p , cycle):
         unic = self.__str__()
         p.text(u'<TimeitResult : '+unic+u'>')
-
 
 
 class TimeitTemplateFiller(ast.NodeTransformer):
@@ -298,7 +298,7 @@ python-profiler package from non-free.""")
                                            list_all=True, posix=False)
         if cell is not None:
             arg_str += '\n' + cell
-        arg_str = self.shell.input_splitter.transform_cell(arg_str)
+        arg_str = self.shell.transform_cell(arg_str)
         return self._run_with_profiler(arg_str, opts, self.shell.user_ns)
 
     def _run_with_profiler(self, code, opts, namespace):
@@ -508,6 +508,9 @@ python-profiler package from non-free.""")
         *two* back slashes (e.g. ``\\\\*``) to suppress expansions.
         To completely disable these expansions, you can use -G flag.
 
+        On Windows systems, the use of single quotes `'` when specifying 
+        a file is not supported. Use double quotes `"`.
+
         Options:
 
         -n
@@ -644,7 +647,9 @@ python-profiler package from non-free.""")
                 return
             arg_lst = [modpath] + arg_lst
         try:
-            filename = file_finder(arg_lst[0])
+            fpath = None # initialize to make sure fpath is in scope later
+            fpath = arg_lst[0]
+            filename = file_finder(fpath)
         except IndexError:
             warn('you must provide at least a filename.')
             print('\n%run:\n', oinspect.getdoc(self.run))
@@ -654,6 +659,8 @@ python-profiler package from non-free.""")
                 msg = str(e)
             except UnicodeError:
                 msg = e.message
+            if os.name == 'nt' and re.match(r"^'.*'$",fpath):
+                warn('For Windows, use double quotes to wrap a filename: %run "mypath\\myfile.py"')
             error(msg)
             return
 
@@ -913,7 +920,7 @@ python-profiler package from non-free.""")
             Number of times to execute `run`.
 
         """
-        twall0 = time.time()
+        twall0 = time.perf_counter()
         if nruns == 1:
             t0 = clock2()
             run()
@@ -936,7 +943,7 @@ python-profiler package from non-free.""")
             print("  Times  : %10s   %10s" % ('Total', 'Per run'))
             print("  User   : %10.2f s, %10.2f s." % (t_usr, t_usr / nruns))
             print("  System : %10.2f s, %10.2f s." % (t_sys, t_sys / nruns))
-        twall1 = time.time()
+        twall1 = time.perf_counter()
         print("Wall time: %10.2f s." % (twall1 - twall0))
 
     @skip_doctest
@@ -963,11 +970,12 @@ python-profiler package from non-free.""")
           body has access to any variables created in the setup code.
 
         Options:
-        -n<N>: execute the given statement <N> times in a loop. If this value
-        is not given, a fitting value is chosen.
+        -n<N>: execute the given statement <N> times in a loop. If <N> is not
+        provided, <N> is determined so as to get sufficient accuracy.
 
-        -r<R>: repeat the loop iteration <R> times and take the best result.
-        Default: 3
+        -r<R>: number of repeats <R>, each consisting of <N> loops, and take the
+        best result.
+        Default: 7
 
         -t: use time.time to measure the time, which is the default on Unix.
         This function measures wall time.
@@ -1033,7 +1041,7 @@ python-profiler package from non-free.""")
         # this code has tight coupling to the inner workings of timeit.Timer,
         # but is there a better way to achieve that the code stmt has access
         # to the shell namespace?
-        transform  = self.shell.input_splitter.transform_cell
+        transform  = self.shell.transform_cell
 
         if cell is None:
             # called as line magic
@@ -1191,9 +1199,9 @@ python-profiler package from non-free.""")
             raise UsageError("Can't use statement directly after '%%time'!")
         
         if cell:
-            expr = self.shell.input_transformer_manager.transform_cell(cell)
+            expr = self.shell.transform_cell(cell)
         else:
-            expr = self.shell.input_transformer_manager.transform_cell(line)
+            expr = self.shell.transform_cell(line)
 
         # Minimum time above which parse time will be reported
         tp_min = 0.1

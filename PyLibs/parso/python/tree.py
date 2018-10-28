@@ -60,7 +60,6 @@ _GET_DEFINITION_TYPES = set([
 _IMPORTS = set(['import_name', 'import_from'])
 
 
-
 class DocstringMixin(object):
     __slots__ = ()
 
@@ -97,7 +96,7 @@ class PythonMixin(object):
 
     def get_name_of_position(self, position):
         """
-        Given a (line, column) tuple, returns a :class`Name` or ``None`` if
+        Given a (line, column) tuple, returns a :py:class:`Name` or ``None`` if
         there is no name at that position.
         """
         for c in self.children:
@@ -125,13 +124,12 @@ class PythonLeaf(PythonMixin, Leaf):
         #   indent error leafs somehow? No idea how, though.
         previous_leaf = self.get_previous_leaf()
         if previous_leaf is not None and previous_leaf.type == 'error_leaf' \
-                and previous_leaf.original_type in ('indent', 'error_dedent'):
+                and previous_leaf.token_type in ('INDENT', 'ERROR_DEDENT'):
             previous_leaf = previous_leaf.get_previous_leaf()
 
         if previous_leaf is None:
             return self.line - self.prefix.count('\n'), 0  # It's the first leaf.
         return previous_leaf.end_pos
-
 
 
 class _LeafWithoutNewlines(PythonLeaf):
@@ -165,6 +163,10 @@ class PythonErrorLeaf(ErrorLeaf, PythonLeaf):
 class EndMarker(_LeafWithoutNewlines):
     __slots__ = ()
     type = 'endmarker'
+
+    @utf8_repr
+    def __repr__(self):
+        return "<%s: prefix=%s>" % (type(self).__name__, repr(self.prefix))
 
 
 class Newline(PythonLeaf):
@@ -214,11 +216,6 @@ class Name(_LeafWithoutNewlines):
                 return node
             return None
 
-        if type_ in ():
-            if self in node.get_defined_names():
-                return node
-            return None
-
         if type_ == 'except_clause':
             # TODO in Python 2 this doesn't work correctly. See grammar file.
             #      I think we'll just let it be. Python 2 will be gone in a few
@@ -238,7 +235,6 @@ class Name(_LeafWithoutNewlines):
                 return None
             node = node.parent
         return None
-
 
 
 class Literal(PythonLeaf):
@@ -265,6 +261,33 @@ class String(Literal):
             flags=re.DOTALL
         )
         return match.group(2)[:-len(match.group(1))]
+
+
+class FStringString(Leaf):
+    """
+    f-strings contain f-string expressions and normal python strings. These are
+    the string parts of f-strings.
+    """
+    type = 'fstring_string'
+    __slots__ = ()
+
+
+class FStringStart(Leaf):
+    """
+    f-strings contain f-string expressions and normal python strings. These are
+    the string parts of f-strings.
+    """
+    type = 'fstring_start'
+    __slots__ = ()
+
+
+class FStringEnd(Leaf):
+    """
+    f-strings contain f-string expressions and normal python strings. These are
+    the string parts of f-strings.
+    """
+    type = 'fstring_end'
+    __slots__ = ()
 
 
 class _StringComparisonMixin(object):
@@ -514,7 +537,9 @@ def _create_params(parent, argslist_list):
             if child is None or child == ',':
                 param_children = children[start:end]
                 if param_children:  # Could as well be comma and then end.
-                    if param_children[0] == '*' and param_children[1] == ',' \
+                    if param_children[0] == '*' \
+                            and (len(param_children) == 1
+                                 or param_children[1] == ',') \
                             or check_python2_nested_param(param_children[0]):
                         for p in param_children:
                             p.parent = parent
@@ -597,6 +622,21 @@ class Function(ClassOrFunc):
 
         return scan(self.children)
 
+    def iter_raise_stmts(self):
+        """
+        Returns a generator of `raise_stmt`. Includes raise statements inside try-except blocks
+        """
+        def scan(children):
+            for element in children:
+                if element.type == 'raise_stmt' \
+                        or element.type == 'keyword' and element.value == 'raise':
+                    yield element
+                if element.type in _RETURN_STMT_CONTAINERS:
+                    for e in scan(element.children):
+                        yield e
+
+        return scan(self.children)
+
     def is_generator(self):
         """
         :return bool: Checks if a function is a generator or not.
@@ -615,6 +655,7 @@ class Function(ClassOrFunc):
             return None
         except IndexError:
             return None
+
 
 class Lambda(Function):
     """
@@ -1067,7 +1108,7 @@ class Param(PythonBaseNode):
     @property
     def annotation(self):
         """
-        The default is the test node that appears after `->`. Is `None` in case
+        The default is the test node that appears after `:`. Is `None` in case
         no annotation is present.
         """
         tfpdef = self._tfpdef()
@@ -1151,4 +1192,5 @@ class CompFor(PythonBaseNode):
         """
         Returns the a list of `Name` that the comprehension defines.
         """
-        return _defined_names(self.children[1])
+        # allow async for
+        return _defined_names(self.children[self.children.index('for') + 1])

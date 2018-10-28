@@ -55,7 +55,6 @@ class NodeOrLeaf(object):
         Returns the node immediately preceding this node in this parent's
         children list. If this node does not have a previous sibling, it is
         None.
-        None.
         """
         # Can't use index(); we need to test by identity
         for i, child in enumerate(self.parent.children):
@@ -230,6 +229,7 @@ class Leaf(NodeOrLeaf):
 
 class TypedLeaf(Leaf):
     __slots__ = ('type',)
+
     def __init__(self, type, value, start_pos, prefix=''):
         super(TypedLeaf, self).__init__(value, start_pos, prefix)
         self.type = type
@@ -278,6 +278,14 @@ class BaseNode(NodeOrLeaf):
         return self._get_code_for_children(self.children, include_prefix)
 
     def get_leaf_for_position(self, position, include_prefixes=False):
+        """
+        Get the :py:class:`parso.tree.Leaf` at ``position``
+
+        :param tuple position: A position tuple, row, column. Rows start from 1
+        :param bool include_prefixes: If ``False``, ``None`` will be returned if ``position`` falls
+            on whitespace or comments before a leaf
+        :return: :py:class:`parso.tree.Leaf` at ``position``, or ``None``
+        """
         def binary_search(lower, upper):
             if lower == upper:
                 element = self.children[lower]
@@ -331,7 +339,7 @@ class Node(BaseNode):
 
 class ErrorNode(BaseNode):
     """
-    A node that containes valid nodes/leaves that we're follow by a token that
+    A node that contains valid nodes/leaves that we're follow by a token that
     was invalid. This basically means that the leaf after this node is where
     Python would mark a syntax error.
     """
@@ -344,13 +352,13 @@ class ErrorLeaf(Leaf):
     A leaf that is either completely invalid in a language (like `$` in Python)
     or is invalid at that position. Like the star in `1 +* 1`.
     """
-    __slots__ = ('original_type',)
+    __slots__ = ('token_type',)
     type = 'error_leaf'
 
-    def __init__(self, original_type, value, start_pos, prefix=''):
+    def __init__(self, token_type, value, start_pos, prefix=''):
         super(ErrorLeaf, self).__init__(value, start_pos, prefix)
-        self.original_type = original_type
+        self.token_type = token_type
 
     def __repr__(self):
         return "<%s: %s:%s, %s>" % \
-            (type(self).__name__, self.original_type, repr(self.value), self.start_pos)
+            (type(self).__name__, self.token_type, repr(self.value), self.start_pos)

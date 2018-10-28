@@ -14,7 +14,7 @@ import re
 
 from IPython.core.autocall import IPyAutocall
 from traitlets.config.configurable import Configurable
-from IPython.core.inputsplitter import (
+from IPython.core.inputtransformer2 import (
     ESC_MAGIC,
     ESC_QUOTE,
     ESC_QUOTE2,
@@ -43,7 +43,7 @@ re_fun_name = re.compile(r'[a-zA-Z_]([a-zA-Z0-9_.]*) *$')
 # particular, all binary operators should be excluded, so that if foo is
 # callable, foo OP bar doesn't become foo(OP bar), which is invalid.  The
 # characters '!=()' don't need to be checked for, as the checkPythonChars
-# routine explicitely does so, to catch direct calls and rebindings of
+# routine explicitly does so, to catch direct calls and rebindings of
 # existing names.
 
 # Warning: the '-' HAS TO BE AT THE END of the first group, otherwise
@@ -82,7 +82,7 @@ class PrefilterManager(Configurable):
     prefilter consumes lines of input and produces transformed lines of
     input.
 
-    The iplementation consists of two phases:
+    The implementation consists of two phases:
 
     1. Transformers
     2. Checkers and handlers

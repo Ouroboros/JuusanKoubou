@@ -2,17 +2,16 @@ import hashlib
 import os
 
 from parso._compatibility import FileNotFoundError, is_pypy
-from parso.pgen2.pgen import generate_grammar
+from parso.pgen2 import generate_grammar
 from parso.utils import split_lines, python_bytes_to_unicode, parse_version_string
 from parso.python.diff import DiffParser
 from parso.python.tokenize import tokenize_lines, tokenize
-from parso.python import token
+from parso.python.token import PythonTokenTypes
 from parso.cache import parser_cache, load_module, save_module
 from parso.parser import BaseParser
 from parso.python.parser import Parser as PythonParser
 from parso.python.errors import ErrorFinderConfig
 from parso.python import pep8
-from parso.python import fstring
 
 _loaded_grammars = {}
 
@@ -21,7 +20,7 @@ class Grammar(object):
     """
     :py:func:`parso.load_grammar` returns instances of this class.
 
-    Creating custom grammars by calling this is not supported, yet.
+    Creating custom none-python grammars by calling this is not supported, yet.
     """
     #:param text: A BNF representation of your grammar.
     _error_normalizer_config = None
@@ -52,8 +51,8 @@ class Grammar(object):
             it is invalid, it will be returned as an error node. If disabled,
             you will get a ParseError when encountering syntax errors in your
             code.
-        :param str start_symbol: The grammar symbol that you want to parse. Only
-            allowed to be used when error_recovery is False.
+        :param str start_symbol: The grammar rule (nonterminal) that you want
+            to parse. Only allowed to be used when error_recovery is False.
         :param str path: The path to the file you want to open. Only needed for caching.
         :param bool cache: Keeps a copy of the parser tree in RAM and on disk
             if a path is given. Returns the cached trees if the corresponding
@@ -73,7 +72,7 @@ class Grammar(object):
             :py:class:`parso.python.tree.Module`.
         """
         if 'start_pos' in kwargs:
-            raise TypeError("parse() got an unexpected keyworda argument.")
+            raise TypeError("parse() got an unexpected keyword argument.")
         return self._parse(code=code, **kwargs)
 
     def _parse(self, code=None, error_recovery=True, path=None,
@@ -89,15 +88,12 @@ class Grammar(object):
             raise TypeError("Please provide either code or a path.")
 
         if start_symbol is None:
-            start_symbol = self._start_symbol
+            start_symbol = self._start_nonterminal
 
         if error_recovery and start_symbol != 'file_input':
             raise NotImplementedError("This is currently not implemented.")
 
-        if cache and code is None and path is not None:
-            # With the current architecture we cannot load from cache if the
-            # code is given, because we just load from cache if it's not older than
-            # the latest change (file last modified).
+        if cache and path is not None:
             module_node = load_module(self._hashed, path, cache_path=cache_path)
             if module_node is not None:
                 return module_node
@@ -140,7 +136,7 @@ class Grammar(object):
         p = self._parser(
             self._pgen_grammar,
             error_recovery=error_recovery,
-            start_symbol=start_symbol
+            start_nonterminal=start_symbol
         )
         root_node = p.parse(tokens=tokens)
 
@@ -189,17 +185,16 @@ class Grammar(object):
         normalizer.walk(node)
         return normalizer.issues
 
-
     def __repr__(self):
-        labels = self._pgen_grammar.number2symbol.values()
-        txt = ' '.join(list(labels)[:3]) + ' ...'
+        nonterminals = self._pgen_grammar._nonterminal_to_dfas.keys()
+        txt = ' '.join(list(nonterminals)[:3]) + ' ...'
         return '<%s:%s>' % (self.__class__.__name__, txt)
 
 
 class PythonGrammar(Grammar):
     _error_normalizer_config = ErrorFinderConfig()
-    _token_namespace = token
-    _start_symbol = 'file_input'
+    _token_namespace = PythonTokenTypes
+    _start_nonterminal = 'file_input'
 
     def __init__(self, version_info, bnf_text):
         super(PythonGrammar, self).__init__(
@@ -218,46 +213,22 @@ class PythonGrammar(Grammar):
         return tokenize(code, self.version_info)
 
 
-class PythonFStringGrammar(Grammar):
-    _token_namespace = fstring.TokenNamespace
-    _start_symbol = 'fstring'
-
-    def __init__(self):
-        super(PythonFStringGrammar, self).__init__(
-            text=fstring.GRAMMAR,
-            tokenizer=fstring.tokenize,
-            parser=fstring.Parser
-        )
-
-    def parse(self, code, **kwargs):
-        return self._parse(code, **kwargs)
-
-    def _parse(self, code, error_recovery=True, start_pos=(1, 0)):
-        tokens = self._tokenizer(code, start_pos=start_pos)
-        p = self._parser(
-            self._pgen_grammar,
-            error_recovery=error_recovery,
-            start_symbol=self._start_symbol,
-        )
-        return p.parse(tokens=tokens)
-
-    def parse_leaf(self, leaf, error_recovery=True):
-        code = leaf._get_payload()
-        return self.parse(code, error_recovery=True, start_pos=leaf.start_pos)
-
-
 def load_grammar(**kwargs):
     """
     Loads a :py:class:`parso.Grammar`. The default version is the current Python
     version.
 
     :param str version: A python version string, e.g. ``version='3.3'``.
+    :param str path: A path to a grammar file
     """
-    def load_grammar(language='python', version=None):
+    def load_grammar(language='python', version=None, path=None):
         if language == 'python':
             version_info = parse_version_string(version)
 
-            file = 'python/grammar%s%s.txt' % (version_info.major, version_info.minor)
+            file = path or os.path.join(
+                'python',
+                'grammar%s%s.txt' % (version_info.major, version_info.minor)
+            )
 
             global _loaded_grammars
             path = os.path.join(os.path.dirname(__file__), file)
@@ -273,10 +244,6 @@ def load_grammar(**kwargs):
                 except FileNotFoundError:
                     message = "Python version %s is currently not supported." % version
                     raise NotImplementedError(message)
-        elif language == 'python-f-string':
-            if version is not None:
-                raise NotImplementedError("Currently different versions are not supported.")
-            return PythonFStringGrammar()
         else:
             raise NotImplementedError("No support for language %s." % language)
 

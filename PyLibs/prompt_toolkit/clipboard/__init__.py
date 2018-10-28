@@ -1,4 +1,5 @@
-from .base import Clipboard, ClipboardData
+from __future__ import unicode_literals
+from .base import Clipboard, ClipboardData, DummyClipboard, DynamicClipboard
 from .in_memory import InMemoryClipboard
 
 
@@ -6,3 +7,11 @@ from .in_memory import InMemoryClipboard
 # `pyperclip` module to be present.
 
 #from .pyperclip import PyperclipClipboard
+
+__all__ = [
+    'Clipboard',
+    'ClipboardData',
+    'DummyClipboard',
+    'DynamicClipboard',
+    'InMemoryClipboard',
+]

@@ -20,6 +20,8 @@ import re
 import sys
 import ast
 from itertools import chain
+from urllib.request import urlopen
+from urllib.parse import urlencode
 
 # Our own packages
 from IPython.core.error import TryNext, StdinNotImplementedError, UsageError
@@ -53,7 +55,7 @@ $""", re.VERBOSE)
 
 def extract_code_ranges(ranges_str):
     """Turn a string of range for %%load into 2-tuples of (start, stop)
-    ready to use as a slice of the content splitted by lines.
+    ready to use as a slice of the content split by lines.
 
     Examples
     --------
@@ -244,7 +246,7 @@ class CodeMagics(Magics):
 
     @line_magic
     def pastebin(self, parameter_s=''):
-        """Upload code to Github's Gist paste bin, returning the URL.
+        """Upload code to dpaste's paste bin, returning the URL.
 
         Usage:\\
           %pastebin [-d "Custom description"] 1-7
@@ -265,25 +267,14 @@ class CodeMagics(Magics):
             print(e.args[0])
             return
 
-        # Deferred import
-        try:
-            from urllib.request import urlopen # Py 3
-        except ImportError:
-            from urllib2 import urlopen
-        import json
-        post_data = json.dumps({
-          "description": opts.get('d', "Pasted from IPython"),
-          "public": True,
-          "files": {
-            "file1.py": {
-              "content": code
-            }
-          }
+        post_data = urlencode({
+          "title": opts.get('d', "Pasted from IPython"),
+          "syntax": "python3",
+          "content": code
         }).encode('utf-8')
 
-        response = urlopen("https://api.github.com/gists", post_data)
-        response_data = json.loads(response.read().decode('utf-8'))
-        return response_data['html_url']
+        response = urlopen("http://dpaste.com/api/v2/", post_data)
+        return response.headers.get('Location')
 
     @line_magic
     def loadpy(self, arg_s):
@@ -369,14 +360,14 @@ class CodeMagics(Magics):
 
         l = len(contents)
 
-        # 200 000 is ~ 2500 full 80 caracter lines
+        # 200 000 is ~ 2500 full 80 character lines
         # so in average, more than 5000 lines
         if l > 200000 and 'y' not in opts:
             try:
                 ans = self.shell.ask_yes_no(("The text you're trying to load seems pretty big"\
                 " (%d characters). Continue (y/[N]) ?" % l), default='n' )
             except StdinNotImplementedError:
-                #asume yes if raw input not implemented
+                #assume yes if raw input not implemented
                 ans = True
 
             if ans is False :

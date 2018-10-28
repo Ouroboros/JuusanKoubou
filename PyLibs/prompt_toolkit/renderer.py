@@ -4,25 +4,30 @@ Renders the command line on the console.
 """
 from __future__ import unicode_literals
 
-from prompt_toolkit.filters import to_cli_filter
+from prompt_toolkit.eventloop import Future, From, ensure_future, get_event_loop
+from prompt_toolkit.filters import to_filter
+from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.layout.mouse_handlers import MouseHandlers
 from prompt_toolkit.layout.screen import Point, Screen, WritePosition
-from prompt_toolkit.output import Output
-from prompt_toolkit.styles import Style
-from prompt_toolkit.token import Token
+from prompt_toolkit.output import Output, ColorDepth
+from prompt_toolkit.styles import BaseStyle, DummyStyleTransformation, StyleTransformation
 from prompt_toolkit.utils import is_windows
 
+from collections import deque
 from six.moves import range
+import time
+import threading
 
-__all__ = (
+__all__ = [
     'Renderer',
-    'print_tokens',
-)
+    'print_formatted_text',
+]
 
 
-def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_token=None,
-                        is_done=False, use_alternate_screen=False, attrs_for_token=None, size=None,
-                        previous_width=0):  # XXX: drop is_done
+def _output_screen_diff(app, output, screen, current_pos, color_depth,
+                        previous_screen=None, last_style=None, is_done=False,
+                        full_screen=False, attrs_for_style_string=None,
+                        size=None, previous_width=0):  # XXX: drop is_done
     """
     Render the diff between this screen and the previous screen.
 
@@ -36,16 +41,16 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
     Don't change things without profiling first.
 
     :param current_pos: Current cursor position.
-    :param last_token: `Token` instance that represents the output attributes of
-            the last drawn character. (Color/attributes.)
-    :param attrs_for_token: :class:`._TokenToAttrsCache` instance.
+    :param last_style: The style string, used for drawing the last drawn
+        character.  (Color/attributes.)
+    :param attrs_for_style_string: :class:`._StyleStringToAttrsCache` instance.
     :param width: The width of the terminal.
-    :param prevous_width: The width of the terminal during the last rendering.
+    :param previous_width: The width of the terminal during the last rendering.
     """
     width, height = size.columns, size.rows
 
     #: Remember the last printed character.
-    last_token = [last_token]  # nonlocal
+    last_style = [last_style]  # nonlocal
 
     #: Variable for capturing the output.
     write = output.write
@@ -65,14 +70,14 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
     def reset_attributes():
         " Wrapper around Output.reset_attributes. "
         _output_reset_attributes()
-        last_token[0] = None  # Forget last char after resetting attributes.
+        last_style[0] = None  # Forget last char after resetting attributes.
 
     def move_cursor(new):
         " Move cursor to this `new` point. Returns the given Point. "
         current_x, current_y = current_pos.x, current_pos.y
 
         if new.y > current_y:
-            # Use newlines instead of CURSOR_DOWN, because this meight add new lines.
+            # Use newlines instead of CURSOR_DOWN, because this might add new lines.
             # CURSOR_DOWN will never create new lines at the bottom.
             # Also reset attributes, otherwise the newline could draw a
             # background color.
@@ -98,16 +103,23 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
         """
         Write the output of this character.
         """
-        # If the last printed character has the same token, it also has the
-        # same style, so we don't output it.
-        the_last_token = last_token[0]
+        # If the last printed character has the same style, don't output the
+        # style again.
+        the_last_style = last_style[0]  # Either `None` or a style string.
 
-        if the_last_token and the_last_token == char.token:
+        if the_last_style == char.style:
             write(char.char)
         else:
-            _output_set_attributes(attrs_for_token[char.token])
+            # Look up `Attr` for this style string. Only set attributes if different.
+            # (Two style strings can still have the same formatting.)
+            # Note that an empty style string can have formatting that needs to
+            # be applied, because of style transformations.
+            new_attrs = attrs_for_style_string[char.style]
+            if not the_last_style or new_attrs != attrs_for_style_string[the_last_style]:
+                _output_set_attributes(new_attrs, color_depth)
+
             write(char.char)
-            last_token[0] = char.token
+            last_style[0] = char.style
 
     # Render for the first time: reset styling.
     if not previous_screen:
@@ -117,13 +129,13 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
     # we have a prompt. - In the case of a REPL, like IPython, people can have
     # background threads, and it's hard for debugging if their output is not
     # wrapped.)
-    if not previous_screen or not use_alternate_screen:
+    if not previous_screen or not full_screen:
         output.disable_autowrap()
 
     # When the previous screen has a different size, redraw everything anyway.
-    # Also when we are done. (We meight take up less rows, so clearing is important.)
+    # Also when we are done. (We might take up less rows, so clearing is important.)
     if is_done or not previous_screen or previous_width != width:  # XXX: also consider height??
-        current_pos = move_cursor(Point(0, 0))
+        current_pos = move_cursor(Point(x=0, y=0))
         reset_attributes()
         output.erase_down()
 
@@ -156,21 +168,21 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
             # When the old and new character at this position are different,
             # draw the output. (Because of the performance, we don't call
             # `Char.__ne__`, but inline the same expression.)
-            if new_char.char != old_char.char or new_char.token != old_char.token:
-                current_pos = move_cursor(Point(y=y, x=c))
+            if new_char.char != old_char.char or new_char.style != old_char.style:
+                current_pos = move_cursor(Point(x=c, y=y))
 
                 # Send injected escape sequences to output.
                 if c in zero_width_escapes_row:
                     write_raw(zero_width_escapes_row[c])
 
                 output_char(new_char)
-                current_pos = current_pos._replace(x=current_pos.x + char_width)
+                current_pos = Point(x=current_pos.x + char_width, y=current_pos.y)
 
             c += char_width
 
         # If the new line is shorter, trim it.
         if previous_screen and new_max_line_len < previous_max_line_len:
-            current_pos = move_cursor(Point(y=y, x=new_max_line_len+1))
+            current_pos = move_cursor(Point(x=new_max_line_len + 1, y=y))
             reset_attributes()
             output.erase_end_of_line()
 
@@ -185,50 +197,60 @@ def _output_screen_diff(output, screen, current_pos, previous_screen=None, last_
     # (If the scrolling is actually wanted, the layout can still be build in a
     # way to behave that way by setting a dynamic height.)
     if current_height > previous_screen.height:
-        current_pos = move_cursor(Point(y=current_height - 1, x=0))
+        current_pos = move_cursor(Point(x=0, y=current_height - 1))
 
     # Move cursor:
     if is_done:
-        current_pos = move_cursor(Point(y=current_height, x=0))
+        current_pos = move_cursor(Point(x=0, y=current_height))
         output.erase_down()
     else:
-        current_pos = move_cursor(screen.cursor_position)
+        current_pos = move_cursor(
+            screen.get_cursor_position(app.layout.current_window))
 
-    if is_done or not use_alternate_screen:
+    if is_done or not full_screen:
         output.enable_autowrap()
 
     # Always reset the color attributes. This is important because a background
     # thread could print data to stdout and we want that to be displayed in the
     # default colors. (Also, if a background color has been set, many terminals
-    # give weird artifacs on resize events.)
+    # give weird artifacts on resize events.)
     reset_attributes()
 
     if screen.show_cursor or is_done:
         output.show_cursor()
 
-    return current_pos, last_token[0]
+    return current_pos, last_style[0]
 
 
 class HeightIsUnknownError(Exception):
     " Information unavailable. Did not yet receive the CPR response. "
 
 
-class _TokenToAttrsCache(dict):
+class _StyleStringToAttrsCache(dict):
     """
-    A cache structure that maps Pygments Tokens to :class:`.Attr`.
+    A cache structure that maps style strings to :class:`.Attr`.
     (This is an important speed up.)
     """
-    def __init__(self, get_style_for_token):
-        self.get_style_for_token = get_style_for_token
+    def __init__(self, get_attrs_for_style_str, style_transformation):
+        assert callable(get_attrs_for_style_str)
+        assert isinstance(style_transformation, StyleTransformation)
 
-    def __missing__(self, token):
-        try:
-            result = self.get_style_for_token(token)
-        except KeyError:
-            result = None
+        self.get_attrs_for_style_str = get_attrs_for_style_str
+        self.style_transformation = style_transformation
 
-        self[token] = result
-        return result
+    def __missing__(self, style_str):
+        attrs = self.get_attrs_for_style_str(style_str)
+        attrs = self.style_transformation.transform_attrs(attrs)
+
+        self[style_str] = attrs
+        return attrs
+
+
+class CPR_Support(object):
+    " Enum: whether or not CPR is supported. "
+    SUPPORTED = 'SUPPORTED'
+    NOT_SUPPORTED = 'NOT_SUPPORTED'
+    UNKNOWN = 'UNKNOWN'
 
 
 class Renderer(object):
@@ -239,24 +261,34 @@ class Renderer(object):
 
         output = Vt100_Output.from_pty(sys.stdout)
         r = Renderer(style, output)
-        r.render(cli, layout=...)
+        r.render(app, layout=...)
     """
-    def __init__(self, style, output, use_alternate_screen=False, mouse_support=False):
-        assert isinstance(style, Style)
+    CPR_TIMEOUT = 2  # Time to wait until we consider CPR to be not supported.
+
+    def __init__(self, style, output, full_screen=False, mouse_support=False, cpr_not_supported_callback=None):
+        assert isinstance(style, BaseStyle)
         assert isinstance(output, Output)
+        assert callable(cpr_not_supported_callback) or cpr_not_supported_callback is None
 
         self.style = style
         self.output = output
-        self.use_alternate_screen = use_alternate_screen
-        self.mouse_support = to_cli_filter(mouse_support)
+        self.full_screen = full_screen
+        self.mouse_support = to_filter(mouse_support)
+        self.cpr_not_supported_callback = cpr_not_supported_callback
 
         self._in_alternate_screen = False
         self._mouse_support_enabled = False
         self._bracketed_paste_enabled = False
 
-        # Waiting for CPR flag. True when we send the request, but didn't got a
-        # response.
-        self.waiting_for_cpr = False
+        # Future set when we are waiting for a CPR flag.
+        self._waiting_for_cpr_futures = deque()
+        self.cpr_support = CPR_Support.UNKNOWN
+
+        # Cache for the style.
+        self._attrs_for_style = None
+        self._last_style_hash = None
+        self._last_transformation_hash = None
+        self._last_color_depth = None
 
         self.reset(_scroll=True)
 
@@ -270,24 +302,16 @@ class Renderer(object):
         # instance a toolbar at the bottom position.)
         self._last_screen = None
         self._last_size = None
-        self._last_token = None
-
-        # When the style hash changes, we have to do a full redraw as well as
-        # clear the `_attrs_for_token` dictionary.
-        self._last_style_hash = None
-        self._attrs_for_token = None
+        self._last_style = None
 
         # Default MouseHandlers. (Just empty.)
         self.mouse_handlers = MouseHandlers()
-
-        # Remember the last title. Only set the title when it changes.
-        self._last_title = None
 
         #: Space from the top of the layout, until the bottom of the terminal.
         #: We don't know this until a `report_absolute_cursor_row` call.
         self._min_available_height = 0
 
-        # In case of Windown, also make sure to scroll to the current cursor
+        # In case of Windows, also make sure to scroll to the current cursor
         # position. (Only when rendering the first time.)
         if is_windows() and _scroll:
             self.output.scroll_buffer_to_prompt()
@@ -311,13 +335,21 @@ class Renderer(object):
         self.output.flush()
 
     @property
+    def last_rendered_screen(self):
+        """
+        The `Screen` class that was generated during the last rendering.
+        This can be `None`.
+        """
+        return self._last_screen
+
+    @property
     def height_is_known(self):
         """
         True when the height from the cursor until the bottom of the terminal
         is known. (It's often nicer to draw bottom toolbars only if the height
         is known, in order to avoid flickering when the CPR response arrives.)
         """
-        return self.use_alternate_screen or self._min_available_height > 0 or \
+        return self.full_screen or self._min_available_height > 0 or \
             is_windows()  # On Windows, we don't have to wait for a CPR.
 
     @property
@@ -337,6 +369,11 @@ class Renderer(object):
     def request_absolute_cursor_position(self):
         """
         Get current cursor position.
+
+        We do this to calculate the minimum available height that we can
+        consume for rendering the prompt. This is the available space below te
+        cursor.
+
         For vt100: Do CPR request. (answer will arrive later.)
         For win32: Do API call. (Answer comes immediately.)
         """
@@ -344,34 +381,115 @@ class Renderer(object):
         # clear or reset). We will rely on that in `report_absolute_cursor_row`.
         assert self._cursor_pos.y == 0
 
+        # In full-screen mode, always use the total height as min-available-height.
+        if self.full_screen:
+            self._min_available_height = self.output.get_size().rows
+
         # For Win32, we have an API call to get the number of rows below the
         # cursor.
-        if is_windows():
+        elif is_windows():
             self._min_available_height = self.output.get_rows_below_cursor_position()
+
+        # Use CPR.
         else:
-            if self.use_alternate_screen:
-                self._min_available_height = self.output.get_size().rows
-            else:
+            if self.cpr_support == CPR_Support.NOT_SUPPORTED:
+                return
+
+            def do_cpr():
                 # Asks for a cursor position report (CPR).
-                self.waiting_for_cpr = True
+                self._waiting_for_cpr_futures.append(Future())
                 self.output.ask_for_cpr()
+
+            if self.cpr_support == CPR_Support.SUPPORTED:
+                do_cpr()
+
+            # If we don't know whether CPR is supported, only do a request if
+            # none is pending, and test it, using a timer.
+            elif self.cpr_support == CPR_Support.UNKNOWN and not self.waiting_for_cpr:
+                do_cpr()
+
+                def timer():
+                    time.sleep(self.CPR_TIMEOUT)
+
+                    # Not set in the meantime -> not supported.
+                    if self.cpr_support == CPR_Support.UNKNOWN:
+                        self.cpr_support = CPR_Support.NOT_SUPPORTED
+
+                        if self.cpr_not_supported_callback:
+                            # Make sure to call this callback in the main thread.
+                            get_event_loop().call_from_executor(self.cpr_not_supported_callback)
+
+                t = threading.Thread(target=timer)
+                t.daemon = True
+                t.start()
 
     def report_absolute_cursor_row(self, row):
         """
         To be called when we know the absolute cursor position.
         (As an answer of a "Cursor Position Request" response.)
         """
+        self.cpr_support = CPR_Support.SUPPORTED
+
         # Calculate the amount of rows from the cursor position until the
         # bottom of the terminal.
         total_rows = self.output.get_size().rows
         rows_below_cursor = total_rows - row + 1
 
-        # Set the
+        # Set the minimum available height.
         self._min_available_height = rows_below_cursor
 
-        self.waiting_for_cpr = False
+        # Pop and set waiting for CPR future.
+        try:
+            f = self._waiting_for_cpr_futures.popleft()
+        except IndexError:
+            pass  # Received CPR response without having a CPR.
+        else:
+            f.set_result(None)
 
-    def render(self, cli, layout, is_done=False):
+    @property
+    def waiting_for_cpr(self):
+        """
+        Waiting for CPR flag. True when we send the request, but didn't got a
+        response.
+        """
+        return bool(self._waiting_for_cpr_futures)
+
+    def wait_for_cpr_responses(self, timeout=1):
+        """
+        Wait for a CPR response.
+        """
+        cpr_futures = list(self._waiting_for_cpr_futures)  # Make copy.
+
+        # When there are no CPRs in the queue. Don't do anything.
+        if not cpr_futures or self.cpr_support == CPR_Support.NOT_SUPPORTED:
+            return Future.succeed(None)
+
+        f = Future()
+
+        # When a CPR has been received, set the result.
+        def wait_for_responses():
+            for response_f in cpr_futures:
+                yield From(response_f)
+            if not f.done():
+                f.set_result(None)
+        ensure_future(wait_for_responses())
+
+        # Timeout.
+        def wait_for_timeout():
+            time.sleep(timeout)
+
+            # Got timeout.
+            if not f.done():
+                self._waiting_for_cpr_futures = deque()
+                f.set_result(None)
+
+        t = threading.Thread(target=wait_for_timeout)
+        t.daemon = True
+        t.start()
+
+        return f
+
+    def render(self, app, layout, is_done=False):
         """
         Render the current interface to the output.
 
@@ -381,7 +499,7 @@ class Renderer(object):
         output = self.output
 
         # Enter alternate screen.
-        if self.use_alternate_screen and not self._in_alternate_screen:
+        if self.full_screen and not self._in_alternate_screen:
             self._in_alternate_screen = True
             output.enter_alternate_screen()
 
@@ -391,7 +509,7 @@ class Renderer(object):
             self._bracketed_paste_enabled = True
 
         # Enable/disable mouse support.
-        needs_mouse_support = self.mouse_support(cli)
+        needs_mouse_support = self.mouse_support()
 
         if needs_mouse_support and not self._mouse_support_enabled:
             output.enable_mouse_support()
@@ -408,63 +526,74 @@ class Renderer(object):
                                     # containers decides to display it.
         mouse_handlers = MouseHandlers()
 
-        if is_done:
-            height = 0  # When we are done, we don't necessary want to fill up until the bottom.
+        # Calculate height.
+        if self.full_screen:
+            height = size.rows
+        elif is_done:
+            # When we are done, we don't necessary want to fill up until the bottom.
+            height = layout.container.preferred_height(size.columns, size.rows).preferred
         else:
-            height = self._last_screen.height if self._last_screen else 0
-            height = max(self._min_available_height, height)
+            last_height = self._last_screen.height if self._last_screen else 0
+            height = max(self._min_available_height,
+                         last_height,
+                         layout.container.preferred_height(size.columns, size.rows).preferred)
+
+        height = min(height, size.rows)
 
         # When te size changes, don't consider the previous screen.
         if self._last_size != size:
             self._last_screen = None
 
-        # When we render using another style, do a full repaint. (Forget about
-        # the previous rendered screen.)
+        # When we render using another style or another color depth, do a full
+        # repaint. (Forget about the previous rendered screen.)
         # (But note that we still use _last_screen to calculate the height.)
-        if self.style.invalidation_hash() != self._last_style_hash:
+        if (self.style.invalidation_hash() != self._last_style_hash or
+                app.style_transformation.invalidation_hash() != self._last_transformation_hash or
+                app.color_depth != self._last_color_depth):
             self._last_screen = None
-            self._attrs_for_token = None
-        if self._attrs_for_token is None:
-            self._attrs_for_token = _TokenToAttrsCache(self.style.get_attrs_for_token)
-        self._last_style_hash = self.style.invalidation_hash()
+            self._attrs_for_style = None
 
-        layout.write_to_screen(cli, screen, mouse_handlers, WritePosition(
+        if self._attrs_for_style is None:
+            self._attrs_for_style = _StyleStringToAttrsCache(
+                self.style.get_attrs_for_style_str,
+                app.style_transformation)
+
+        self._last_style_hash = self.style.invalidation_hash()
+        self._last_transformation_hash = app.style_transformation.invalidation_hash()
+        self._last_color_depth = app.color_depth
+
+        layout.container.write_to_screen(screen, mouse_handlers, WritePosition(
             xpos=0,
             ypos=0,
             width=size.columns,
-            height=(size.rows if self.use_alternate_screen else height),
-            extended_height=size.rows,
-        ))
+            height=height,
+        ), parent_style='', erase_bg=False, z_index=None)
+        screen.draw_all_floats()
 
-        # When grayed. Replace all tokens in the new screen.
-        if cli.is_aborting or cli.is_exiting:
-            screen.replace_all_tokens(Token.Aborted)
+        # When grayed. Replace all styles in the new screen.
+        if app.exit_style:
+            screen.append_style_to_content(app.exit_style)
 
         # Process diff and write to output.
-        self._cursor_pos, self._last_token = _output_screen_diff(
-            output, screen, self._cursor_pos,
-            self._last_screen, self._last_token, is_done,
-            use_alternate_screen=self.use_alternate_screen,
-            attrs_for_token=self._attrs_for_token,
-            size=size,
+        self._cursor_pos, self._last_style = _output_screen_diff(
+            app, output, screen, self._cursor_pos, app.color_depth,
+            self._last_screen, self._last_style, is_done,
+            full_screen=self.full_screen,
+            attrs_for_style_string=self._attrs_for_style, size=size,
             previous_width=(self._last_size.columns if self._last_size else 0))
         self._last_screen = screen
         self._last_size = size
         self.mouse_handlers = mouse_handlers
 
-        # Write title if it changed.
-        new_title = cli.terminal_title
-
-        if new_title != self._last_title:
-            if new_title is None:
-                self.output.clear_title()
-            else:
-                self.output.set_title(new_title)
-            self._last_title = new_title
-
         output.flush()
 
-    def erase(self, leave_alternate_screen=True, erase_title=True):
+        # Set visible windows in layout.
+        app.layout.visible_windows = screen.visible_windows
+
+        if is_done:
+            self.reset()
+
+    def erase(self, leave_alternate_screen=True):
         """
         Hide all output and put the cursor back at the first line. This is for
         instance used for running a system command (while hiding the CLI) and
@@ -472,7 +601,6 @@ class Renderer(object):
 
         :param leave_alternate_screen: When True, and when inside an alternate
             screen buffer, quit the alternate screen.
-        :param erase_title: When True, clear the title from the title bar.
         """
         output = self.output
 
@@ -482,10 +610,6 @@ class Renderer(object):
         output.reset_attributes()
         output.enable_autowrap()
         output.flush()
-
-        # Erase title.
-        if self._last_title and erase_title:
-            output.clear_title()
 
         self.reset(leave_alternate_screen=leave_alternate_screen)
 
@@ -506,29 +630,42 @@ class Renderer(object):
         self.request_absolute_cursor_position()
 
 
-def print_tokens(output, tokens, style):
+def print_formatted_text(
+        output, formatted_text, style, style_transformation=None,
+        color_depth=None):
     """
-    Print a list of (Token, text) tuples in the given style to the output.
+    Print a list of (style_str, text) tuples in the given style to the output.
     """
     assert isinstance(output, Output)
-    assert isinstance(style, Style)
+    assert isinstance(style, BaseStyle)
+    assert style_transformation is None or isinstance(style_transformation, StyleTransformation)
+    assert color_depth is None or color_depth in ColorDepth._ALL
+
+    fragments = to_formatted_text(formatted_text)
+    style_transformation = style_transformation or DummyStyleTransformation()
+    color_depth = color_depth or ColorDepth.default()
 
     # Reset first.
     output.reset_attributes()
     output.enable_autowrap()
 
-    # Print all (token, text) tuples.
-    attrs_for_token = _TokenToAttrsCache(style.get_attrs_for_token)
+    # Print all (style_str, text) tuples.
+    attrs_for_style_string = _StyleStringToAttrsCache(
+        style.get_attrs_for_style_str,
+        style_transformation)
 
-    for token, text in tokens:
-        attrs = attrs_for_token[token]
+    for style_str, text in fragments:
+        attrs = attrs_for_style_string[style_str]
 
         if attrs:
-            output.set_attributes(attrs)
+            output.set_attributes(attrs, color_depth)
         else:
             output.reset_attributes()
 
-        output.write(text)
+        # Assume that the output is raw, and insert a carriage return before
+        # every newline. (Also important when the front-end is a telnet client.)
+        assert '\r' not in text
+        output.write(text.replace('\n', '\r\n'))
 
     # Reset again.
     output.reset_attributes()

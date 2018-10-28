@@ -8,7 +8,7 @@ import os
 import sys
 import signal
 import time
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, CalledProcessError
 import atexit
 
 from IPython.core import magic_arguments
@@ -31,14 +31,14 @@ def script_args(f):
             '--out', type=str,
             help="""The variable in which to store stdout from the script.
             If the script is backgrounded, this will be the stdout *pipe*,
-            instead of the stderr text itself.
+            instead of the stderr text itself and will not be auto closed.
             """
         ),
         magic_arguments.argument(
             '--err', type=str,
             help="""The variable in which to store stderr from the script.
             If the script is backgrounded, this will be the stderr *pipe*,
-            instead of the stderr text itself.
+            instead of the stderr text itself and will not be autoclosed.
             """
         ),
         magic_arguments.argument(
@@ -54,6 +54,12 @@ def script_args(f):
             This is used only when --bg option is given.
             """
         ),
+        magic_arguments.argument(
+            '--no-raise-error', action="store_false", dest='raise_error',
+            help="""Whether you should raise an error message in addition to 
+            a stream on stderr if you get a nonzero exit code.
+            """
+        )
     ]
     for arg in args:
         f = arg(f)
@@ -187,11 +193,16 @@ class ScriptMagics(Magics):
         if args.bg:
             self.bg_processes.append(p)
             self._gc_bg_processes()
+            to_close = []
             if args.out:
                 self.shell.user_ns[args.out] = p.stdout
+            else:
+                to_close.append(p.stdout)
             if args.err:
                 self.shell.user_ns[args.err] = p.stderr
-            self.job_manager.new(self._run_script, p, cell, daemon=True)
+            else:
+                to_close.append(p.stderr)
+            self.job_manager.new(self._run_script, p, cell, to_close, daemon=True)
             if args.proc:
                 self.shell.user_ns[args.proc] = p
             return
@@ -218,8 +229,8 @@ class ScriptMagics(Magics):
                 print("Error while terminating subprocess (pid=%i): %s" \
                     % (p.pid, e))
             return
-        out = py3compat.bytes_to_str(out)
-        err = py3compat.bytes_to_str(err)
+        out = py3compat.decode(out)
+        err = py3compat.decode(err)
         if args.out:
             self.shell.user_ns[args.out] = out
         else:
@@ -230,11 +241,15 @@ class ScriptMagics(Magics):
         else:
             sys.stderr.write(err)
             sys.stderr.flush()
+        if args.raise_error and p.returncode!=0:
+            raise CalledProcessError(p.returncode, cell, output=out, stderr=err)
     
-    def _run_script(self, p, cell):
+    def _run_script(self, p, cell, to_close):
         """callback for running the script in the background"""
         p.stdin.write(cell)
         p.stdin.close()
+        for s in to_close:
+            s.close()
         p.wait()
 
     @line_magic("killbgscripts")

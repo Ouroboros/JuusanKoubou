@@ -6,6 +6,9 @@ verify subtle object deletion and reference counting issues, the %run tests
 will be kept in this separate file.  This makes it easier to aggregate in one
 place the tricks needed to handle it; most other magics are much easier to test
 and we do so in a common test_magic file.
+
+Note that any test using `run -i` should make sure to do a `reset` afterwards,
+as otherwise it may influence later tests.
 """
 
 # Copyright (c) IPython Development Team.
@@ -28,7 +31,6 @@ from nose import SkipTest
 
 from IPython.testing import decorators as dec
 from IPython.testing import tools as tt
-from IPython.utils import py3compat
 from IPython.utils.io import capture_output
 from IPython.utils.tempdir import TemporaryDirectory
 from IPython.core import debugger
@@ -142,13 +144,12 @@ def doctest_run_option_parser_for_windows():
     """
 
 
-@py3compat.doctest_refactor_print
 def doctest_reset_del():
     """Test that resetting doesn't cause errors in __del__ methods.
 
     In [2]: class A(object):
        ...:     def __del__(self):
-       ...:         print str("Hi")
+       ...:         print(str("Hi"))
        ...:
 
     In [3]: a = A()
@@ -245,9 +246,9 @@ class TestMagicRunSimple(tt.TempFileMixin):
                 raise SkipTest("Test requires pywin32")
         src = ("class A(object):\n"
                "    def __del__(self):\n"
-               "        print 'object A deleted'\n"
+               "        print('object A deleted')\n"
                "a = A()\n")
-        self.mktmp(py3compat.doctest_refactor_print(src))
+        self.mktmp(src)
         if dec.module_not_available('sqlite3'):
             err = 'WARNING: IPython History requires SQLite, your history will not be saved\n'
         else:
@@ -317,13 +318,19 @@ tclass.py: deleting object: C-third
         src = "yy = zz\n"
         self.mktmp(src)
         _ip.run_cell("zz = 23")
-        _ip.magic('run -i %s' % self.fname)
-        nt.assert_equal(_ip.user_ns['yy'], 23)
-        _ip.magic('reset -f')
+        try:
+            _ip.magic('run -i %s' % self.fname)
+            nt.assert_equal(_ip.user_ns['yy'], 23)
+        finally:
+            _ip.magic('reset -f')
+            
         _ip.run_cell("zz = 23")
-        _ip.magic('run -i %s' % self.fname)
-        nt.assert_equal(_ip.user_ns['yy'], 23)
-    
+        try:
+            _ip.magic('run -i %s' % self.fname)
+            nt.assert_equal(_ip.user_ns['yy'], 23)
+        finally:
+            _ip.magic('reset -f')
+            
     def test_unicode(self):
         """Check that files in odd encodings are accepted."""
         mydir = os.path.dirname(__file__)
@@ -505,8 +512,11 @@ def test_run__name__():
         _ip.magic('run -n {}'.format(path))
         nt.assert_equal(_ip.user_ns.pop('q'), 'foo')
 
-        _ip.magic('run -i -n {}'.format(path))
-        nt.assert_equal(_ip.user_ns.pop('q'), 'foo')
+        try:
+            _ip.magic('run -i -n {}'.format(path))
+            nt.assert_equal(_ip.user_ns.pop('q'), 'foo')
+        finally:
+            _ip.magic('reset -f')
 
 
 def test_run_tb():

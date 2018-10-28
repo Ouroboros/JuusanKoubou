@@ -19,11 +19,11 @@ name = 'ipython'
 # IPython version information.  An empty _version_extra corresponds to a full
 # release.  'dev' as a _version_extra string means this is a development
 # version
-_version_major = 6
-_version_minor = 2
-_version_patch = 1
+_version_major = 7
+_version_minor = 1
+_version_patch = 0
 _version_extra = '.dev'
-# _version_extra = 'rc2'
+# _version_extra = 'b1'
 _version_extra = ''  # Uncomment this for full releases
 
 # Construct full version string from these.
@@ -48,7 +48,7 @@ IPython provides a rich toolkit to help you make the most out of using Python
 interactively.  Its main components are:
 
 * A powerful interactive Python shell
-* A `Jupyter <http://jupyter.org/>`_ kernel to work with Python code in Jupyter
+* A `Jupyter <https://jupyter.org/>`_ kernel to work with Python code in Jupyter
   notebooks and other interactive frontends.
 
 The enhanced interactive Python shells have the following main features:
@@ -114,5 +114,6 @@ classifiers = [
     'License :: OSI Approved :: BSD License',
     'Programming Language :: Python',
     'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3 :: Only',
     'Topic :: System :: Shells'
     ]

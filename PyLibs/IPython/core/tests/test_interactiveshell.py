@@ -9,6 +9,7 @@ recurring bugs we seem to encounter with high-level interaction.
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
 
+import asyncio
 import ast
 import os
 import signal
@@ -17,7 +18,6 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
-from io import StringIO
 
 from os.path import join
 
@@ -25,12 +25,12 @@ import nose.tools as nt
 
 from IPython.core.error import InputRejected
 from IPython.core.inputtransformer import InputTransformer
+from IPython.core import interactiveshell
 from IPython.testing.decorators import (
     skipif, skip_win32, onlyif_unicode_paths, onlyif_cmds_exist,
 )
 from IPython.testing import tools as tt
 from IPython.utils.process import find_cmd
-from IPython.utils import py3compat
 
 #-----------------------------------------------------------------------------
 # Globals
@@ -263,6 +263,7 @@ class InteractiveShellTestCase(unittest.TestCase):
         pre_always = mock.Mock()
         post_explicit = mock.Mock()
         post_always = mock.Mock()
+        all_mocks = [pre_explicit, pre_always, post_explicit, post_always]
         
         ip.events.register('pre_run_cell', pre_explicit)
         ip.events.register('pre_execute', pre_always)
@@ -280,6 +281,19 @@ class InteractiveShellTestCase(unittest.TestCase):
             ip.run_cell("1")
             assert pre_explicit.called
             assert post_explicit.called
+            info, = pre_explicit.call_args[0]
+            result, = post_explicit.call_args[0]
+            self.assertEqual(info, result.info)
+            # check that post hooks are always called
+            [m.reset_mock() for m in all_mocks]
+            ip.run_cell("syntax error")
+            assert pre_always.called
+            assert pre_explicit.called
+            assert post_always.called
+            assert post_explicit.called
+            info, = pre_explicit.call_args[0]
+            result, = post_explicit.call_args[0]
+            self.assertEqual(info, result.info)
         finally:
             # remove post-exec
             ip.events.unregister('pre_run_cell', pre_explicit)
@@ -534,7 +548,8 @@ class ExitCodeChecks(tt.TempFileMixin):
             else:
                 del os.environ['SHELL']
 
-class TestSystemRaw(unittest.TestCase, ExitCodeChecks):
+
+class TestSystemRaw(ExitCodeChecks, unittest.TestCase):
     system = ip.system_raw
 
     @onlyif_unicode_paths
@@ -555,7 +570,7 @@ class TestSystemRaw(unittest.TestCase, ExitCodeChecks):
         self.assertEqual(ip.user_ns['_exit_code'], -signal.SIGINT)
 
 # TODO: Exit codes are currently ignored on Windows.
-class TestSystemPipedExitCode(unittest.TestCase, ExitCodeChecks):
+class TestSystemPipedExitCode(ExitCodeChecks, unittest.TestCase):
     system = ip.system_piped
 
     @skip_win32
@@ -570,7 +585,7 @@ class TestSystemPipedExitCode(unittest.TestCase, ExitCodeChecks):
     def test_exit_code_signal(self):
         ExitCodeChecks.test_exit_code_signal(self)
 
-class TestModules(unittest.TestCase, tt.TempFileMixin):
+class TestModules(tt.TempFileMixin, unittest.TestCase):
     def test_extraneous_loads(self):
         """Test we're not loading modules on startup that we shouldn't.
         """
@@ -820,28 +835,22 @@ def test_user_expression():
 class TestSyntaxErrorTransformer(unittest.TestCase):
     """Check that SyntaxError raised by an input transformer is handled by run_cell()"""
 
-    class SyntaxErrorTransformer(InputTransformer):
-
-        def push(self, line):
+    @staticmethod
+    def transformer(lines):
+        for line in lines:
             pos = line.find('syntaxerror')
             if pos >= 0:
                 e = SyntaxError('input contains "syntaxerror"')
                 e.text = line
                 e.offset = pos + 1
                 raise e
-            return line
-
-        def reset(self):
-            pass
+        return lines
 
     def setUp(self):
-        self.transformer = TestSyntaxErrorTransformer.SyntaxErrorTransformer()
-        ip.input_splitter.python_line_transforms.append(self.transformer)
-        ip.input_transformer_manager.python_line_transforms.append(self.transformer)
+        ip.input_transformers_post.append(self.transformer)
 
     def tearDown(self):
-        ip.input_splitter.python_line_transforms.remove(self.transformer)
-        ip.input_transformer_manager.python_line_transforms.remove(self.transformer)
+        ip.input_transformers_post.remove(self.transformer)
 
     def test_syntaxerror_input_transformer(self):
         with tt.AssertPrints('1234'):
@@ -910,3 +919,30 @@ def wrn():
         with tt.AssertNotPrints("I AM  A WARNING"):
             ip.run_cell("wrn()")
         ip.run_cell("del wrn")
+
+
+def test_custom_exc_count():
+    hook = mock.Mock(return_value=None)
+    ip.set_custom_exc((SyntaxError,), hook)
+    before = ip.execution_count
+    ip.run_cell("def foo()", store_history=True)
+    # restore default excepthook
+    ip.set_custom_exc((), None)
+    nt.assert_equal(hook.call_count, 1)
+    nt.assert_equal(ip.execution_count, before + 1)
+
+
+def test_run_cell_async():
+    loop = asyncio.get_event_loop()
+    ip.run_cell("import asyncio")
+    coro = ip.run_cell_async("await asyncio.sleep(0.01)\n5")
+    assert asyncio.iscoroutine(coro)
+    result = loop.run_until_complete(coro)
+    assert isinstance(result, interactiveshell.ExecutionResult)
+    assert result.result == 5
+
+
+def test_should_run_async():
+    assert not ip.should_run_async("a = 5")
+    assert ip.should_run_async("await x")
+    assert ip.should_run_async("import asyncio; await asyncio.sleep(1)")

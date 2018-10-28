@@ -116,10 +116,8 @@ import traceback
 import types
 import weakref
 from importlib import import_module
-from IPython.utils.py3compat import PY3
+from importlib.util import source_from_cache
 from imp import reload
-
-from IPython.utils import openpy
 
 #------------------------------------------------------------------------------
 # Autoreload functionality
@@ -185,7 +183,7 @@ class ModuleReloader(object):
         if not hasattr(module, '__file__') or module.__file__ is None:
             return None, None
 
-        if getattr(module, '__name__', None) in ['__mp_main__', '__main__']:
+        if getattr(module, '__name__', None) in [None, '__mp_main__', '__main__']:
             # we cannot reload(__main__) or reload(__mp_main__)
             return None, None
 
@@ -196,7 +194,7 @@ class ModuleReloader(object):
             py_filename = filename
         else:
             try:
-                py_filename = openpy.source_from_cache(filename)
+                py_filename = source_from_cache(filename)
             except ValueError:
                 return None, None
 
@@ -271,7 +269,7 @@ def update_function(old, new):
 
 def update_class(old, new):
     """Replace stuff in the __dict__ of a class, and upgrade
-    method code objects"""
+    method code objects, and add new methods, if any"""
     for key in list(old.__dict__.keys()):
         old_obj = getattr(old, key)
         try:
@@ -292,6 +290,13 @@ def update_class(old, new):
             setattr(old, key, getattr(new, key))
         except (AttributeError, TypeError):
             pass # skip non-writable attributes
+
+    for key in list(new.__dict__.keys()):
+        if key not in list(old.__dict__.keys()):
+            try:
+                setattr(old, key, getattr(new, key))
+            except (AttributeError, TypeError):
+                pass # skip non-writable attributes
 
 
 def update_property(old, new):
@@ -333,7 +338,7 @@ class StrongRef(object):
         return self.obj
 
 
-def superreload(module, reload=reload, old_objects={}):
+def superreload(module, reload=reload, old_objects=None):
     """Enhanced version of the builtin reload function.
 
     superreload remembers objects previously in the module, and
@@ -343,6 +348,8 @@ def superreload(module, reload=reload, old_objects={}):
     - clears the module's namespace before reloading
 
     """
+    if old_objects is None:
+        old_objects = {}
 
     # collect old objects in the module
     for name, obj in list(module.__dict__.items()):

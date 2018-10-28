@@ -1,4 +1,5 @@
 import getpass
+from distutils import log
 from distutils.command import upload as orig
 
 
@@ -8,8 +9,22 @@ class upload(orig.upload):
     in a variety of different ways.
     """
 
+    def run(self):
+        try:
+            orig.upload.run(self)
+        finally:
+            self.announce(
+                "WARNING: Uploading via this command is deprecated, use twine "
+                "to upload instead (https://pypi.org/p/twine/)",
+                log.WARN
+            )
+
     def finalize_options(self):
         orig.upload.finalize_options(self)
+        self.username = (
+            self.username or
+            getpass.getuser()
+        )
         # Attempt to obtain password. Short circuit evaluation at the first
         # sign of success.
         self.password = (
