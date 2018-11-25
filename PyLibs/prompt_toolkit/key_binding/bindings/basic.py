@@ -131,9 +131,12 @@ def load_basic_bindings():
     handle(Keys.Any, filter=insert_mode, save_before=if_no_repeat)(
         get_by_name('self-insert'))
     handle('c-t', filter=insert_mode)(get_by_name('transpose-chars'))
-    handle('c-w', filter=insert_mode)(get_by_name('unix-word-rubout'))
     handle('c-i', filter=insert_mode)(get_by_name('menu-complete'))
     handle('s-tab', filter=insert_mode)(get_by_name('menu-complete-backward'))
+
+    # Control-W should delete, using whitespace as separator, while M-Del
+    # should delete using [^a-zA-Z0-9] as a boundary.
+    handle('c-w', filter=insert_mode)(get_by_name('unix-word-rubout'))
 
     handle('pageup', filter= ~has_selection)(get_by_name('previous-history'))
     handle('pagedown', filter= ~has_selection)(get_by_name('next-history'))

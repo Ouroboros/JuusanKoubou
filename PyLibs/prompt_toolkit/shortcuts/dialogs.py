@@ -70,6 +70,7 @@ def input_dialog(title='', text='', ok_text='OK', cancel_text='Cancel',
     """
     def accept(buf):
         get_app().layout.focus(ok_button)
+        return True  # Keep text.
 
     def ok_handler():
         get_app().exit(result=textfield.text)
@@ -113,7 +114,10 @@ def message_dialog(title='', text='', ok_text='Ok', style=None, async_=False):
 def radiolist_dialog(title='', text='', ok_text='Ok', cancel_text='Cancel',
                      values=None, style=None, async_=False):
     """
-    Display a simple message box and wait until the user presses enter.
+    Display a simple list of element the user can choose amongst.
+
+    Only one element can be selected at a time using Arrow keys and Enter.
+    The focus can be moved between the list and the Ok/Cancel button with tab.
     """
     def ok_handler():
         get_app().exit(result=radio_list.current_value)
