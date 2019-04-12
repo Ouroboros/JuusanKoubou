@@ -1,258 +1,205 @@
+from __future__ import absolute_import
+
 import sys
 from collections import abc
 from collections.abc import Iterable, Set
-from operator import itemgetter
 
+from cpython.object cimport PyObject_Str, Py_NE, PyObject_RichCompare
 
-_marker = object()
+from ._abc import MultiMapping, MutableMultiMapping
+from ._istr import istr
 
+from ._multidict_iter cimport *
+from ._multidict_views cimport *
+from ._pair_list cimport *
 
-class istr(str):
-
-    """Case insensitive str."""
-
-    __is_istr__ = True
-
-    def __new__(cls, val='',
-                encoding=sys.getdefaultencoding(), errors='strict'):
-        if getattr(val, '__is_istr__', False):
-            # Faster than instance check
-            return val
-        if isinstance(val, (bytes, bytearray, memoryview)):
-            val = str(val, encoding, errors)
-        elif isinstance(val, str):
-            pass
-        else:
-            val = str(val)
-        ret = str.__new__(cls, val.title())
-        return ret
-
-    def title(self):
-        return self
-
+cdef object _marker = object()
 
 upstr = istr  # for relaxing backward compatibility problems
+cdef object _istr = istr
 
+pair_list_init(istr)
+# multidict_iter_init()
+multidict_views_init()
 
-cdef _eq(self, other):
-    cdef _Base typed_self
-    cdef _Base typed_other
-    cdef int is_left_base, is_right_base
+def getversion(_Base md):
+    return pair_list_version(md._impl)
 
-    is_left_base = isinstance(self, _Base)
-    is_right_base = isinstance(other, _Base)
-
-    if is_left_base and is_right_base:
-        return (<_Base>self)._items == (<_Base>other)._items
-    elif is_left_base and isinstance(other, abc.Mapping):
-        return (<_Base>self)._eq_to_mapping(other)
-    elif is_right_base and isinstance(self, abc.Mapping):
-        return (<_Base>other)._eq_to_mapping(self)
-    else:
-        return NotImplemented
-
-
-cdef class _Pair:
-    cdef object _key
-    cdef object _value
-
-    def __cinit__(self, key, value):
-        self._key = key
-        self._value = value
-
-    def __richcmp__(self, other, op):
-        cdef _Pair left, right
-        if not isinstance(self, _Pair) or not isinstance(other, _Pair):
-            return NotImplemented
-        left = <_Pair>self
-        right = <_Pair>other
-        if op == 2:  # ==
-            return left._key == right._key and left._value == right._value
-        elif op == 3:  # !=
-            return left._key != right._key and left._value != right._value
 
 cdef class _Base:
 
-    cdef list _items
-    cdef object _istr
-    cdef object marker
+    cdef object _impl
 
-    def __cinit__(self):
-        self._istr = istr
-        self.marker = _marker
-
-    cdef str _title(self, s):
-        if type(s) is self._istr:
-            return <str>s
-        return s
+    def impl(self):
+        return self._impl
 
     def getall(self, key, default=_marker):
         """Return a list of all values matching the key."""
-        return self._getall(self._title(key), default)
-
-    cdef _getall(self, key, default):
-        cdef list res
-        cdef _Pair item
-        res = []
-        for i in self._items:
-            item = <_Pair>i
-            if item._key == key:
-                res.append(item._value)
-        if res:
-            return res
-        if not res and default is not self.marker:
-            return default
-        raise KeyError('Key not found: %r' % key)
+        try:
+            return pair_list_get_all(self._impl, key)
+        except KeyError:
+            if default is not _marker:
+                return default
+            else:
+                raise
 
     def getone(self, key, default=_marker):
         """Get first value matching the key."""
-        return self._getone(self._title(key), default)
+        return self._getone(key, default)
 
     cdef _getone(self, key, default):
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            if item._key == key:
-                return item._value
-        if default is not self.marker:
-            return default
-        raise KeyError('Key not found: %r' % key)
+        try:
+            return pair_list_get_one(self._impl, key)
+        except KeyError:
+            if default is not _marker:
+                return default
+            else:
+                raise
 
     # Mapping interface #
 
     def __getitem__(self, key):
-        return self._getone(self._title(key), self.marker)
+        return self._getone(key, _marker)
 
     def get(self, key, default=None):
         """Get first value matching the key.
 
         The method is alias for .getone().
         """
-        return self._getone(self._title(key), default)
+        return self._getone(key, default)
 
     def __contains__(self, key):
-        return self._contains(self._title(key))
+        return self._contains(key)
 
     cdef _contains(self, key):
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            if item._key == key:
-                return True
-        return False
+        return pair_list_contains(self._impl, key)
 
     def __iter__(self):
         return iter(self.keys())
 
     def __len__(self):
-        return len(self._items)
+        return pair_list_len(self._impl)
 
     cpdef keys(self):
         """Return a new view of the dictionary's keys."""
-        return _KeysView.__new__(_KeysView, self._items)
+        return multidict_keysview_new(self)
 
     def items(self):
         """Return a new view of the dictionary's items *(key, value) pairs)."""
-        return _ItemsView.__new__(_ItemsView, self._items)
+        return multidict_itemsview_new(self)
 
     def values(self):
         """Return a new view of the dictionary's values."""
-        return _ValuesView.__new__(_ValuesView, self._items)
+        return multidict_valuesview_new(self)
 
     def __repr__(self):
-        cdef _Pair item
         lst = []
-        for i in self._items:
-            item = <_Pair>i
-            lst.append("'{}': {!r}".format(item._key, item._value))
+        for k, v in self.items():
+            lst.append("'{}': {!r}".format(k, v))
         body = ', '.join(lst)
         return '<{}({})>'.format(self.__class__.__name__, body)
 
-    cdef _eq_to_mapping(self, other):
-        cdef _Pair item
-        left_keys = set(self.keys())
-        right_keys = set(other.keys())
-        if left_keys != right_keys:
-            return False
-        if len(self._items) != len(right_keys):
-            return False
-        for i in self._items:
-            item = <_Pair>i
-            nv = other.get(item._key, self.marker)
-            if item._value != nv:
-                return False
-        return True
+    def __eq__(self, arg):
+        cdef Py_ssize_t pos1
+        cdef PyObject *identity1
+        cdef PyObject *value1
+        cdef Py_hash_t h1
 
-    def __richcmp__(self, other, op):
-        if op == 2:  # ==
-            return _eq(self, other)
-        elif op == 3:  # !=
-            ret = _eq(self, other)
-            if ret is NotImplemented:
-                return ret
-            else:
-                return not ret
+        cdef Py_ssize_t pos2
+        cdef PyObject *identity2
+        cdef PyObject *value2
+        cdef Py_hash_t h2
+
+        cdef _Base other
+
+        if isinstance(arg, _Base):
+            other = <_Base>arg
+            if pair_list_len(self._impl) != pair_list_len(other._impl):
+                return False
+            pos1 = pos2 = 0
+            while (_pair_list_next(self._impl, &pos1, &identity1,
+                                   NULL, &value1, &h1) and
+                   _pair_list_next(other._impl, &pos2, &identity2,
+                                   NULL, &value2, &h2)):
+                if h1 != h2:
+                    return False
+                if PyObject_RichCompare(<object>identity1, <object>identity2, Py_NE):
+                    return False
+                if PyObject_RichCompare(<object>value1, <object>value2, Py_NE):
+                    return False
+            return True
+        elif isinstance(arg, abc.Mapping):
+            return bool(pair_list_eq_to_mapping(self._impl, arg))
         else:
             return NotImplemented
 
 
 cdef class MultiDictProxy(_Base):
+    _proxy_classes = (MultiDict, MultiDictProxy)
+    _base_class = MultiDict
 
     def __init__(self, arg):
         cdef _Base base
-        if not isinstance(arg, (MultiDict, MultiDictProxy)):
+        if not isinstance(arg, self._proxy_classes):
             raise TypeError(
-                'ctor requires MultiDict or MultiDictProxy instance'
+                'ctor requires {} instance'
                 ', not {}'.format(
+                    ' or '.join(self._proxy_classes),
                     type(arg)))
 
         base = arg
-        self._items = base._items
+        self._impl = base._impl
+
+    def __reduce__(self):
+        raise TypeError("can't pickle {} objects"
+                        .format(self.__class__.__name__))
 
     def copy(self):
         """Return a copy of itself."""
-        return MultiDict(self._items)
+        return self._base_class(self)
 
-abc.Mapping.register(MultiDictProxy)
+MultiMapping.register(MultiDictProxy)
 
 
 cdef class CIMultiDictProxy(MultiDictProxy):
-
-    def __init__(self, arg):
-        cdef _Base base
-        if not isinstance(arg, (CIMultiDict, CIMultiDictProxy)):
-            raise TypeError(
-                'ctor requires CIMultiDict or CIMultiDictProxy instance'
-                ', not {}'.format(
-                    type(arg)))
-
-        base = arg
-        self._items = base._items
-
-    cdef str _title(self, s):
-        if type(s) is self._istr:
-            return <str>s
-        return s.title()
-
-    def copy(self):
-        """Return a copy of itself."""
-        return CIMultiDict(self._items)
+    _proxy_classes = (CIMultiDict, CIMultiDictProxy)
+    _base_class = CIMultiDict
 
 
-abc.Mapping.register(CIMultiDictProxy)
+MultiMapping.register(CIMultiDictProxy)
+
+
+cdef str _str(key):
+    typ = type(key)
+    if typ is str:
+        return <str>key
+    if typ is _istr:
+        return PyObject_Str(key)
+    elif issubclass(typ, str):
+        return str(key)
+    else:
+        raise TypeError("MultiDict keys should be either str "
+                        "or subclasses of str")
 
 
 cdef class MultiDict(_Base):
     """An ordered dictionary that can have multiple values for each key."""
 
     def __init__(self, *args, **kwargs):
-        self._items = []
-
+        self._impl = pair_list_new()
         self._extend(args, kwargs, 'MultiDict', True)
 
+    def __reduce__(self):
+        return (
+            self.__class__,
+            (list(self.items()),)
+        )
+
     cdef _extend(self, tuple args, dict kwargs, name, bint do_add):
-        cdef _Pair item
         cdef object key
+        cdef object value
+        cdef object arg
+        cdef object i
 
         if len(args) > 1:
             raise TypeError("{} takes at most 1 positional argument"
@@ -260,71 +207,67 @@ cdef class MultiDict(_Base):
 
         if args:
             arg = args[0]
-            if isinstance(arg, CIMultiDict):
-                self._items.extend((<_Base>arg)._items)
-            elif isinstance(arg, _Base):
-                for i in (<_Base>arg)._items:
-                    item = <_Pair>i
-                    key = self._title(item._key)
-                    value = item._value
-                    if do_add:
-                        self._add(key, value)
-                    else:
-                        self._replace(key, value)
-            elif hasattr(arg, 'items'):
-                for i in arg.items():
-                    if isinstance(i, _Pair):
-                        item = <_Pair>i
-                        key = item._key
-                        value = item._value
-                    else:
-                        key = self._title(i[0])
-                        value = i[1]
-                    if do_add:
-                        self._add(key, value)
-                    else:
-                        self._replace(key, value)
+            if isinstance(arg, _Base) and not kwargs:
+                if do_add:
+                    self._append_items((<_Base>arg)._impl)
+                else:
+                    self._update_items((<_Base>arg)._impl)
             else:
-                for i in arg:
-                    if isinstance(i, _Pair):
-                        item = <_Pair>i
-                        key = item._key
-                        value = item._value
-                    else:
-                        if not len(i) == 2:
-                            raise TypeError(
-                                "{} takes either dict or list of (key, value) "
-                                "tuples".format(name))
-                        key = self._title(i[0])
-                        value = i[1]
-                    if do_add:
-                        self._add(key, value)
-                    else:
-                        self._replace(key, value)
-
-
-        for key, value in kwargs.items():
-            key = self._title(key)
+                if hasattr(arg, 'items'):
+                    arg = arg.items()
+                if kwargs:
+                    arg = list(arg)
+                    arg.extend(list(kwargs.items()))
+                if do_add:
+                    self._append_items_seq(arg, name)
+                else:
+                    pair_list_update_from_seq(self._impl, arg)
+        else:
+            arg = list(kwargs.items())
             if do_add:
-                self._add(key, value)
+                self._append_items_seq(arg, name)
             else:
-                self._replace(key, value)
+                pair_list_update_from_seq(self._impl, arg)
+
+    cdef object _update_items(self, object impl):
+        pair_list_update(self._impl, impl)
+
+    cdef object _append_items(self, object impl):
+        cdef PyObject *key
+        cdef PyObject *val
+        cdef Py_ssize_t pos
+        pos = 0
+        while _pair_list_next(impl, &pos, NULL, &key, &val, NULL):
+            self._add(<object>key, <object>val)
+
+    cdef object _append_items_seq(self, object arg, object name):
+        cdef object i
+        cdef object key
+        cdef object value
+        for i in arg:
+            if not len(i) == 2:
+                raise TypeError(
+                    "{} takes either dict or list of (key, value) "
+                    "tuples".format(name))
+            key = i[0]
+            value = i[1]
+            self._add(key, value)
 
     cdef _add(self, key, value):
-        self._items.append(_Pair.__new__(_Pair, key, value))
+        pair_list_add(self._impl, key, value);
 
     cdef _replace(self, key, value):
-        self._remove(key, False)
-        self._items.append(_Pair.__new__(_Pair, key, value))
+        pair_list_replace(self._impl, key, value)
 
     def add(self, key, value):
         """Add the key and value, not overwriting any previous value."""
-        self._add(self._title(key), value)
+        self._add(key, value)
 
     def copy(self):
         """Return a copy of itself."""
-        cls = self.__class__
-        return cls(self._items)
+        ret = MultiDict()
+        ret._extend((list(self.items()),), {}, 'copy', True)
+        return ret
 
     def extend(self, *args, **kwargs):
         """Extend current MultiDict with more values.
@@ -335,347 +278,85 @@ cdef class MultiDict(_Base):
 
     def clear(self):
         """Remove all items from MultiDict"""
-        self._items.clear()
+        pair_list_clear(self._impl)
 
     # MutableMapping interface #
 
     def __setitem__(self, key, value):
-        self._replace(self._title(key), value)
+        self._replace(key, value)
 
     def __delitem__(self, key):
-        self._remove(self._title(key), True)
-
-    cdef _remove(self, key, bint raise_key_error):
-        cdef _Pair item
-        cdef int found
-        found = False
-        for i in range(len(self._items) - 1, -1, -1):
-            item = <_Pair>self._items[i]
-            if item._key == key:
-                del self._items[i]
-                found = True
-        if not found and raise_key_error:
-            raise KeyError(key)
+        pair_list_del(self._impl, key)
 
     def setdefault(self, key, default=None):
         """Return value for key, set value to default if key is not present."""
-        cdef _Pair item
-        key = self._title(key)
-        for i in self._items:
-            item = <_Pair>i
-            if item._key == key:
-                return item._value
-        self._add(key, default)
-        return default
+        return pair_list_set_default(self._impl, key, default)
 
-    def pop(self, key, default=_marker):
-        """Remove specified key and return the corresponding value.
+    def popone(self, key, default=_marker):
+        """Remove the last occurrence of key and return the corresponding
+        value.
 
-        If key is not found, d is returned if given, otherwise
+        If key is not found, default is returned if given, otherwise
         KeyError is raised.
 
         """
-        cdef int found
-        cdef object value
-        cdef _Pair item
-        key = self._title(key)
-        value = None
-        found = False
-        for i in range(len(self._items) - 1, -1, -1):
-            item = <_Pair>self._items[i]
-            if item._key == key:
-                value = item._value
-                del self._items[i]
-                found = True
-        if not found:
-            if default is self.marker:
-                raise KeyError(key)
+        try:
+            return pair_list_pop_one(self._impl, key)
+        except KeyError:
+            if default is _marker:
+                raise
             else:
                 return default
-        else:
-            return value
+
+    pop = popone
+
+    def popall(self, key, default=_marker):
+        """Remove all occurrences of key and return the list of corresponding
+        values.
+
+        If key is not found, default is returned if given, otherwise
+        KeyError is raised.
+
+        """
+        try:
+            return pair_list_pop_all(self._impl, key)
+        except KeyError:
+            if default is _marker:
+                raise
+            else:
+                return default
 
     def popitem(self):
         """Remove and return an arbitrary (key, value) pair."""
-        cdef _Pair item
-        if self._items:
-            item = <_Pair>self._items.pop(0)
-            return (item._key, item._value)
-        else:
-            raise KeyError("empty multidict")
+        return pair_list_pop_item(self._impl)
 
     def update(self, *args, **kwargs):
         """Update the dictionary from *other*, overwriting existing keys."""
         self._extend(args, kwargs, "update", False)
 
 
-abc.MutableMapping.register(MultiDict)
+MutableMultiMapping.register(MultiDict)
 
 
 cdef class CIMultiDict(MultiDict):
     """An ordered dictionary that can have multiple values for each key."""
 
     def __init__(self, *args, **kwargs):
-        self._items = []
-
+        self._impl = ci_pair_list_new()
         self._extend(args, kwargs, 'CIMultiDict', True)
 
-    cdef str _title(self, s):
-        if type(s) is self._istr:
-            return <str>s
-        return s.title()
+    def __reduce__(self):
+        return (
+            self.__class__,
+            (list(self.items()),),
+        )
+
+    def copy(self):
+        """Return a copy of itself."""
+        ret = CIMultiDict()
+        ret._extend((list(self.items()),), {}, 'copy', True)
+        return ret
 
 
+MutableMultiMapping.register(CIMultiDict)
 
-abc.MutableMapping.register(CIMultiDict)
-
-
-cdef class _ViewBase:
-
-    cdef list _items
-
-    def __cinit__(self, list items):
-        self._items = items
-
-    def __len__(self):
-        return len(self._items)
-
-
-cdef class _ViewBaseSet(_ViewBase):
-
-    def __richcmp__(self, other, op):
-        if op == 0:  # <
-            if not isinstance(other, Set):
-                return NotImplemented
-            return len(self) < len(other) and self <= other
-        elif op == 1:  # <=
-            if not isinstance(other, Set):
-                return NotImplemented
-            if len(self) > len(other):
-                return False
-            for elem in self:
-                if elem not in other:
-                    return False
-            return True
-        elif op == 2:  # ==
-            if not isinstance(other, Set):
-                return NotImplemented
-            return len(self) == len(other) and self <= other
-        elif op == 3:  # !=
-            return not self == other
-        elif op == 4:  #  >
-            if not isinstance(other, Set):
-                return NotImplemented
-            return len(self) > len(other) and self >= other
-        elif op == 5:  # >=
-            if not isinstance(other, Set):
-                return NotImplemented
-            if len(self) < len(other):
-                return False
-            for elem in other:
-                if elem not in self:
-                    return False
-            return True
-
-    def __and__(self, other):
-        if not isinstance(other, Iterable):
-            return NotImplemented
-        if isinstance(self, _ViewBaseSet):
-            self = set(iter(self))
-        if isinstance(other, _ViewBaseSet):
-            other = set(iter(other))
-        if not isinstance(other, Set):
-            other = set(iter(other))
-        return self & other
-
-    def __or__(self, other):
-        if not isinstance(other, Iterable):
-            return NotImplemented
-        if isinstance(self, _ViewBaseSet):
-            self = set(iter(self))
-        if isinstance(other, _ViewBaseSet):
-            other = set(iter(other))
-        if not isinstance(other, Set):
-            other = set(iter(other))
-        return self | other
-
-    def __sub__(self, other):
-        if not isinstance(other, Iterable):
-            return NotImplemented
-        if isinstance(self, _ViewBaseSet):
-            self = set(iter(self))
-        if isinstance(other, _ViewBaseSet):
-            other = set(iter(other))
-        if not isinstance(other, Set):
-            other = set(iter(other))
-        return self - other
-
-    def __xor__(self, other):
-        if not isinstance(other, Iterable):
-            return NotImplemented
-        if isinstance(self, _ViewBaseSet):
-            self = set(iter(self))
-        if isinstance(other, _ViewBaseSet):
-            other = set(iter(other))
-        if not isinstance(other, Set):
-            other = set(iter(other))
-        return self ^ other
-
-
-cdef class _ItemsIter:
-    cdef list _items
-    cdef int _current
-    cdef int _len
-
-    def __cinit__(self, items):
-        self._items = items
-        self._current = 0
-        self._len = len(self._items)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._current == self._len:
-            raise StopIteration
-        item = <_Pair>self._items[self._current]
-        self._current += 1
-        return (item._key, item._value)
-
-
-cdef class _ItemsView(_ViewBaseSet):
-
-    def isdisjoint(self, other):
-        'Return True if two sets have a null intersection.'
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            t = (item._key, item._value)
-            if t in other:
-                return False
-        return True
-
-    def __contains__(self, i):
-        cdef _Pair item
-        assert isinstance(i, tuple) or isinstance(i, list)
-        assert len(i) == 2
-        item = _Pair.__new__(_Pair, i[0], i[1])
-        return item in self._items
-
-    def __iter__(self):
-        return _ItemsIter.__new__(_ItemsIter, self._items)
-
-    def __repr__(self):
-        cdef _Pair item
-        lst = []
-        for i in self._items:
-            item = <_Pair>i
-            lst.append("{!r}: {!r}".format(item._key, item._value))
-        body = ', '.join(lst)
-        return '{}({})'.format(self.__class__.__name__, body)
-
-
-abc.ItemsView.register(_ItemsView)
-
-
-cdef class _ValuesIter:
-    cdef list _items
-    cdef int _current
-    cdef int _len
-
-    def __cinit__(self, items):
-        self._items = items
-        self._current = 0
-        self._len = len(self._items)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._current == self._len:
-            raise StopIteration
-        item = <_Pair>self._items[self._current]
-        self._current += 1
-        return item._value
-
-
-cdef class _ValuesView(_ViewBase):
-
-    def __contains__(self, value):
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            if item._value == value:
-                return True
-        return False
-
-    def __iter__(self):
-        return _ValuesIter.__new__(_ValuesIter, self._items)
-
-    def __repr__(self):
-        cdef _Pair item
-        lst = []
-        for i in self._items:
-            item = <_Pair>i
-            lst.append("{!r}".format(item._value))
-        body = ', '.join(lst)
-        return '{}({})'.format(self.__class__.__name__, body)
-
-
-abc.ValuesView.register(_ValuesView)
-
-
-cdef class _KeysIter:
-    cdef list _items
-    cdef int _current
-    cdef int _len
-
-    def __cinit__(self, items):
-        self._items = items
-        self._current = 0
-        self._len = len(self._items)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._current == self._len:
-            raise StopIteration
-        item = <_Pair>self._items[self._current]
-        self._current += 1
-        return item._key
-
-
-cdef class _KeysView(_ViewBaseSet):
-
-    def isdisjoint(self, other):
-        'Return True if two sets have a null intersection.'
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            if item._key in other:
-                return False
-        return True
-
-    def __contains__(self, value):
-        cdef _Pair item
-        for i in self._items:
-            item = <_Pair>i
-            if item._key == value:
-                return True
-        return False
-
-    def __iter__(self):
-        return _KeysIter.__new__(_KeysIter, self._items)
-
-    def __repr__(self):
-        cdef _Pair item
-        lst = []
-        for i in self._items:
-            item = <_Pair>i
-            lst.append("{!r}".format(item._key))
-        body = ', '.join(lst)
-        return '{}({})'.format(self.__class__.__name__, body)
-
-
-abc.KeysView.register(_KeysView)

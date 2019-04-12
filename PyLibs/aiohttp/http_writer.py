@@ -2,137 +2,34 @@
 
 import asyncio
 import collections
-import socket
 import zlib
-from urllib.parse import SplitResult
+from typing import Any, Awaitable, Callable, Optional, Union  # noqa
 
-import yarl
+from multidict import CIMultiDict  # noqa
 
-from .abc import AbstractPayloadWriter
-from .helpers import create_future, noop
+from .abc import AbstractStreamWriter
+from .base_protocol import BaseProtocol
+from .helpers import NO_EXTENSIONS
 
 
-__all__ = ('PayloadWriter', 'HttpVersion', 'HttpVersion10', 'HttpVersion11',
-           'StreamWriter')
+__all__ = ('StreamWriter', 'HttpVersion', 'HttpVersion10', 'HttpVersion11')
 
 HttpVersion = collections.namedtuple('HttpVersion', ['major', 'minor'])
 HttpVersion10 = HttpVersion(1, 0)
 HttpVersion11 = HttpVersion(1, 1)
 
 
-if hasattr(socket, 'TCP_CORK'):  # pragma: no cover
-    CORK = socket.TCP_CORK
-elif hasattr(socket, 'TCP_NOPUSH'):  # pragma: no cover
-    CORK = socket.TCP_NOPUSH
-else:  # pragma: no cover
-    CORK = None
+_T_OnChunkSent = Optional[Callable[[bytes], Awaitable[None]]]
 
 
-class StreamWriter:
+class StreamWriter(AbstractStreamWriter):
 
-    def __init__(self, protocol, transport, loop):
+    def __init__(self,
+                 protocol: BaseProtocol,
+                 loop: asyncio.AbstractEventLoop,
+                 on_chunk_sent: _T_OnChunkSent = None) -> None:
         self._protocol = protocol
-        self._loop = loop
-        self._tcp_nodelay = False
-        self._tcp_cork = False
-        self._socket = transport.get_extra_info('socket')
-        self._waiters = []
-        self.available = True
-        self.transport = transport
-
-    def acquire(self, writer):
-        if self.available:
-            self.available = False
-            writer.set_transport(self.transport)
-        else:
-            self._waiters.append(writer)
-
-    def release(self):
-        if self._waiters:
-            self.available = False
-            writer = self._waiters.pop(0)
-            writer.set_transport(self.transport)
-        else:
-            self.available = True
-
-    def replace(self, writer, factory):
-        try:
-            idx = self._waiters.index(writer)
-            writer = factory(self, self._loop, False)
-            self._waiters[idx] = writer
-            return writer
-        except ValueError:
-            self.available = True
-            return factory(self, self._loop)
-
-    @property
-    def tcp_nodelay(self):
-        return self._tcp_nodelay
-
-    def set_tcp_nodelay(self, value):
-        value = bool(value)
-        if self._tcp_nodelay == value:
-            return
-        if self._socket is None:
-            return
-        if self._socket.family not in (socket.AF_INET, socket.AF_INET6):
-            return
-
-        # socket may be closed already, on windows OSError get raised
-        try:
-            if self._tcp_cork:
-                if CORK is not None:  # pragma: no branch
-                    self._socket.setsockopt(socket.IPPROTO_TCP, CORK, False)
-                    self._tcp_cork = False
-
-            self._socket.setsockopt(
-                socket.IPPROTO_TCP, socket.TCP_NODELAY, value)
-            self._tcp_nodelay = value
-        except OSError:
-            pass
-
-    @property
-    def tcp_cork(self):
-        return self._tcp_cork
-
-    def set_tcp_cork(self, value):
-        value = bool(value)
-        if self._tcp_cork == value:
-            return
-        if self._socket is None:
-            return
-        if self._socket.family not in (socket.AF_INET, socket.AF_INET6):
-            return
-
-        try:
-            if self._tcp_nodelay:
-                self._socket.setsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_NODELAY, False)
-                self._tcp_nodelay = False
-            if CORK is not None:  # pragma: no branch
-                self._socket.setsockopt(socket.IPPROTO_TCP, CORK, value)
-                self._tcp_cork = value
-        except OSError:
-            pass
-
-    @asyncio.coroutine
-    def drain(self):
-        """Flush the write buffer.
-
-        The intended use is to write
-
-          w.write(data)
-          yield from w.drain()
-        """
-        if self._protocol.transport is not None:
-            yield from self._protocol._drain_helper()
-
-
-class PayloadWriter(AbstractPayloadWriter):
-
-    def __init__(self, stream, loop, acquire=True):
-        self._stream = stream
-        self._transport = None
+        self._transport = protocol.transport
 
         self.loop = loop
         self.length = None
@@ -141,84 +38,51 @@ class PayloadWriter(AbstractPayloadWriter):
         self.output_size = 0
 
         self._eof = False
-        self._buffer = []
-        self._compress = None
+        self._compress = None  # type: Any
         self._drain_waiter = None
 
-        if self._stream.available:
-            self._transport = self._stream.transport
-            self._stream.available = False
-        elif acquire:
-            self._stream.acquire(self)
-
-    def set_transport(self, transport):
-        self._transport = transport
-
-        chunk = b''.join(self._buffer)
-        if chunk:
-            transport.write(chunk)
-            self._buffer.clear()
-
-        if self._drain_waiter is not None:
-            waiter, self._drain_waiter = self._drain_waiter, None
-            if not waiter.done():
-                waiter.set_result(None)
+        self._on_chunk_sent = on_chunk_sent  # type: _T_OnChunkSent
 
     @property
-    def tcp_nodelay(self):
-        return self._stream.tcp_nodelay
-
-    def set_tcp_nodelay(self, value):
-        self._stream.set_tcp_nodelay(value)
+    def transport(self) -> Optional[asyncio.Transport]:
+        return self._transport
 
     @property
-    def tcp_cork(self):
-        return self._stream.tcp_cork
+    def protocol(self) -> BaseProtocol:
+        return self._protocol
 
-    def set_tcp_cork(self, value):
-        self._stream.set_tcp_cork(value)
-
-    def enable_chunking(self):
+    def enable_chunking(self) -> None:
         self.chunked = True
 
-    def enable_compression(self, encoding='deflate'):
+    def enable_compression(self, encoding: str='deflate') -> None:
         zlib_mode = (16 + zlib.MAX_WBITS
                      if encoding == 'gzip' else -zlib.MAX_WBITS)
         self._compress = zlib.compressobj(wbits=zlib_mode)
 
-    def buffer_data(self, chunk):
-        if chunk:
-            size = len(chunk)
-            self.buffer_size += size
-            self.output_size += size
-            self._buffer.append(chunk)
-
-    def _write(self, chunk):
+    def _write(self, chunk: bytes) -> None:
         size = len(chunk)
         self.buffer_size += size
         self.output_size += size
 
-        if self._transport is not None:
-            if self._buffer:
-                self._buffer.append(chunk)
-                self._transport.write(b''.join(self._buffer))
-                self._buffer.clear()
-            else:
-                self._transport.write(chunk)
-        else:
-            self._buffer.append(chunk)
+        if self._transport is None or self._transport.is_closing():
+            raise ConnectionResetError('Cannot write to closing transport')
+        self._transport.write(chunk)
 
-    def write(self, chunk, *, drain=True, LIMIT=64*1024):
+    async def write(self, chunk: bytes,
+                    *, drain: bool=True, LIMIT: int=0x10000) -> None:
         """Writes chunk of data to a stream.
 
         write_eof() indicates end of stream.
         writer can't be used after write_eof() method being called.
         write() return drain future.
         """
+        if self._on_chunk_sent is not None:
+            await self._on_chunk_sent(chunk)
+
         if self._compress is not None:
             chunk = self._compress.compress(chunk)
             if not chunk:
-                return noop()
+                return
 
         if self.length is not None:
             chunk_len = len(chunk)
@@ -228,37 +92,32 @@ class PayloadWriter(AbstractPayloadWriter):
                 chunk = chunk[:self.length]
                 self.length = 0
                 if not chunk:
-                    return noop()
+                    return
 
         if chunk:
             if self.chunked:
-                chunk_len = ('%x\r\n' % len(chunk)).encode('ascii')
-                chunk = chunk_len + chunk + b'\r\n'
+                chunk_len_pre = ('%x\r\n' % len(chunk)).encode('ascii')
+                chunk = chunk_len_pre + chunk + b'\r\n'
 
             self._write(chunk)
 
             if self.buffer_size > LIMIT and drain:
                 self.buffer_size = 0
-                return self.drain()
+                await self.drain()
 
-        return noop()
-
-    def write_headers(self, status_line, headers, SEP=': ', END='\r\n'):
+    async def write_headers(self, status_line: str,
+                            headers: 'CIMultiDict[str]') -> None:
         """Write request/response status and headers."""
         # status + headers
-        headers = status_line + ''.join(
-            [k + SEP + v + END for k, v in headers.items()])
-        headers = headers.encode('utf-8') + b'\r\n'
+        buf = _serialize_headers(status_line, headers)
+        self._write(buf)
 
-        size = len(headers)
-        self.buffer_size += size
-        self.output_size += size
-        self._buffer.append(headers)
-
-    @asyncio.coroutine
-    def write_eof(self, chunk=b''):
+    async def write_eof(self, chunk: bytes=b'') -> None:
         if self._eof:
             return
+
+        if chunk and self._on_chunk_sent is not None:
+            await self._on_chunk_sent(chunk)
 
         if self._compress:
             if chunk:
@@ -277,54 +136,38 @@ class PayloadWriter(AbstractPayloadWriter):
                     chunk = b'0\r\n\r\n'
 
         if chunk:
-            self.buffer_data(chunk)
+            self._write(chunk)
 
-        yield from self.drain(True)
+        await self.drain()
 
         self._eof = True
         self._transport = None
-        self._stream.release()
 
-    @asyncio.coroutine
-    def drain(self, last=False):
-        if self._transport is not None:
-            if self._buffer:
-                self._transport.write(b''.join(self._buffer))
-                if not last:
-                    self._buffer.clear()
-            yield from self._stream.drain()
-        else:
-            # wait for transport
-            if self._drain_waiter is None:
-                self._drain_waiter = create_future(self.loop)
+    async def drain(self) -> None:
+        """Flush the write buffer.
 
-            yield from self._drain_waiter
+        The intended use is to write
+
+          await w.write(data)
+          await w.drain()
+        """
+        if self._protocol.transport is not None:
+            await self._protocol._drain_helper()
 
 
-class URL(yarl.URL):
+def _py_serialize_headers(status_line: str,
+                          headers: 'CIMultiDict[str]') -> bytes:
+    line = status_line + '\r\n' + ''.join(
+        [k + ': ' + v + '\r\n' for k, v in headers.items()])
+    return line.encode('utf-8') + b'\r\n'
 
-    def __init__(self, schema, netloc, port, path, query, fragment, userinfo):
-        self._strict = False
 
-        if port:
-            netloc += ':{}'.format(port)
-        if userinfo:
-            netloc = yarl.quote(
-                userinfo, safe='@:',
-                protected=':', strict=False) + '@' + netloc
+_serialize_headers = _py_serialize_headers
 
-        if path:
-            path = yarl.quote(path, safe='@:', protected='/', strict=False)
-
-        if query:
-            query = yarl.quote(
-                query, safe='=+&?/:@',
-                protected=yarl.PROTECT_CHARS, qs=True, strict=False)
-
-        if fragment:
-            fragment = yarl.quote(fragment, safe='?/:@', strict=False)
-
-        self._val = SplitResult(
-            schema or '',  # scheme
-            netloc=netloc, path=path, query=query, fragment=fragment)
-        self._cache = {}
+try:
+    import aiohttp._http_writer as _http_writer  # type: ignore
+    _c_serialize_headers = _http_writer._serialize_headers
+    if not NO_EXTENSIONS:
+        _serialize_headers = _c_serialize_headers
+except ImportError:
+    pass

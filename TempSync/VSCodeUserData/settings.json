@@ -2,7 +2,6 @@
 {
     "workbench.startupEditor": "newUntitledFile",
     "workbench.colorTheme": "Material Theme Darker High Contrast",
-    "workbench.iconTheme": "eq-material-theme-icons-darker",
     "workbench.colorCustomizations": {
         "tab.inactiveForeground": "#8A8A8A",
         "editorLineNumber.foreground": "#828282"
@@ -16,7 +15,7 @@
     "editor.renderWhitespace": "all",
     "editor.minimap.showSlider": "always",
     "files.trimTrailingWhitespace": true,
-    "editor.multiCursorModifier": "ctrlCmd",
+    "editor.multiCursorModifier": "alt",
     "editor.tokenColorCustomizations": {
         "comments": "#8A8A8A"
     },
@@ -30,17 +29,6 @@
     "files.associations": {
         "*.xm": "objective-cpp"
     },
-
-    "go.buildOnSave": "off",
-    "go.lintOnSave": "off",
-    "go.vetOnSave": "off",
-    "go.buildFlags": [],
-    "go.lintFlags": [],
-    "go.vetFlags": [],
-    "go.useCodeSnippetsOnFunctionSuggest": false,
-    "go.formatTool": "goreturns",
-    "go.goroot": "D:/Dev/go",
-    "go.gopath": "D:/Dev/go/pkgs;D:/Desktop/Source/GoProject;D:/Desktop/Source/Project/Private;D:/Desktop/Source/Falcom",
 
     "python.pythonPath": "D:/Dev/Python/python.exe",
     "python.linting.enabled": false,
@@ -67,14 +55,11 @@
 
     "typescript.npm": "D:/Dev/nodejs",
 
-    "csharp.suppressDotnetInstallWarning": true,
-
     "git.enabled": false,
     "git.autofetch": false,
     "git.autorefresh": false,
     "git.path": "D:/Dev/PortableGit/bin/git.exe",
     "git.ignoreMissingGitWarning": true,
     "explorer.confirmDelete": false,
-    "materialTheme.fixIconsRunning": false,
     "files.eol": "\n"
 }

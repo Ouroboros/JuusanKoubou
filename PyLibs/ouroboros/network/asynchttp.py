@@ -101,7 +101,7 @@ class AsyncHttp(object):
             return self.decode(encoding)
 
         def decode(self, encoding = None, **kwargs):
-            return self.content.decode(encoding or self.response._get_encoding(), **kwargs)
+            return self.content.decode(encoding or self.response.get_encoding(), **kwargs)
 
     def __init__(self, *, loop = None, timeout = 30, cookie_class = http.cookies.BaseCookie, verify_ssl = True):
         self.loop = loop or asyncio.get_event_loop()
@@ -123,7 +123,7 @@ class AsyncHttp(object):
         self.close()
 
     def close(self):
-        return self.session.close()
+        asyncio.ensure_future(self.session.close(), loop = self.loop)
 
     @property
     def cookies(self):

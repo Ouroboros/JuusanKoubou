@@ -42,11 +42,11 @@ func newBase(url String) *baseDownloader {
         }),
         http.DefaultTimeout(15 * time.Second),
         http.DefaultOption(
-            http.ReadBlock(true),
+            http.ReadChunk(true),
         ),
     )
 
-     //s.SetHTTPProxy("localhost", 6789)
+    // s.SetHTTPProxy("localhost", 6789)
 
     return &baseDownloader{
         url     : url,
@@ -100,8 +100,8 @@ func (self *baseDownloader) Download(path String) (result DownloadResult, err er
 
         resp, err = self.session.Get(
             link.url,
-            http.ReadBlock(true),
-            http.ReadBlockCallback(cb),
+            http.ReadChunk(true),
+            http.ReadChunkCallback(cb),
             http.Timeout(time.Second * 15),
             http.MaxTimeoutTimes(100),
             http.Ignore404(false),

@@ -14,3 +14,4 @@ Windows Registry Editor Version 5.00
 [-HKEY_CLASSES_ROOT\.zip\ShellNew]
 [-HKEY_CLASSES_ROOT\.psd\ShellNew]
 [-HKEY_CLASSES_ROOT\.mdb\ShellNew]
+[-HKEY_CLASSES_ROOT\.accdb\Access.Application.16\ShellNew]

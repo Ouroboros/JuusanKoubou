@@ -51,6 +51,8 @@ func run() {
     fmt.Print("url = ")
     fmt.Scanf("%s\n", &url)
 
+    url = "https://v.youku.com/v_show/id_XMTEyMDM0OTQ4.html"
+
     if url.IsEmpty() {
         url = "http://v.youku.com/v_show/id_XMTg3Nzk5MzAzMg==.html?qq-pf-to=pcqq.c2c"
     }
