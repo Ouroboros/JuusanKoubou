@@ -23,7 +23,7 @@ from IPython.core.error import UsageError
 from IPython.core.magic import (Magics, magics_class, line_magic,
                                 cell_magic,
                                 register_line_magic, register_cell_magic)
-from IPython.core.magics import execution, script, code, logging
+from IPython.core.magics import execution, script, code, logging, osm
 from IPython.testing import decorators as dec
 from IPython.testing import tools as tt
 from IPython.utils.io import capture_output
@@ -433,7 +433,7 @@ def test_parse_options():
     nt.assert_equal(m.parse_options('foo', '')[1], 'foo')
     nt.assert_equal(m.parse_options(u'foo', '')[1], u'foo')
 
-    
+
 def test_dirops():
     """Test various directory handling operations."""
     # curpath = lambda :os.path.splitdrive(os.getcwd())[1].replace('\\','/')
@@ -453,10 +453,27 @@ def test_dirops():
         os.chdir(startdir)
 
 
+def test_cd_force_quiet():
+    """Test OSMagics.cd_force_quiet option"""
+    _ip.config.OSMagics.cd_force_quiet = True
+    osmagics = osm.OSMagics(shell=_ip)
+
+    startdir = os.getcwd()
+    ipdir = os.path.realpath(_ip.ipython_dir)
+
+    try:
+        with tt.AssertNotPrints(ipdir):
+            osmagics.cd('"%s"' % ipdir)
+        with tt.AssertNotPrints(startdir):
+            osmagics.cd('-')
+    finally:
+        os.chdir(startdir)
+
+
 def test_xmode():
     # Calling xmode three times should be a no-op
     xmode = _ip.InteractiveTB.mode
-    for i in range(3):
+    for i in range(4):
         _ip.magic("xmode")
     nt.assert_equal(_ip.InteractiveTB.mode, xmode)
     
@@ -743,6 +760,36 @@ def test_file():
     ip = get_ipython()
     with TemporaryDirectory() as td:
         fname = os.path.join(td, 'file1')
+        ip.run_cell_magic("writefile", fname, u'\n'.join([
+            'line1',
+            'line2',
+        ]))
+        with open(fname) as f:
+            s = f.read()
+        nt.assert_in('line1\n', s)
+        nt.assert_in('line2', s)
+
+@dec.skip_win32
+def test_file_single_quote():
+    """Basic %%writefile with embedded single quotes"""
+    ip = get_ipython()
+    with TemporaryDirectory() as td:
+        fname = os.path.join(td, '\'file1\'')
+        ip.run_cell_magic("writefile", fname, u'\n'.join([
+            'line1',
+            'line2',
+        ]))
+        with open(fname) as f:
+            s = f.read()
+        nt.assert_in('line1\n', s)
+        nt.assert_in('line2', s)
+
+@dec.skip_win32
+def test_file_double_quote():
+    """Basic %%writefile with embedded double quotes"""
+    ip = get_ipython()
+    with TemporaryDirectory() as td:
+        fname = os.path.join(td, '"file1"')
         ip.run_cell_magic("writefile", fname, u'\n'.join([
             'line1',
             'line2',
@@ -1070,7 +1117,8 @@ def test_logging_magic_quiet_from_config():
                 lm.logstart(os.path.join(td, "quiet_from_config.log"))
         finally:
             _ip.logger.logstop()
-    
+
+
 def test_logging_magic_not_quiet():
     _ip.config.LoggingMagics.quiet = False
     lm = logging.LoggingMagics(shell=_ip)
@@ -1081,9 +1129,15 @@ def test_logging_magic_not_quiet():
         finally:
             _ip.logger.logstop()
 
-## 
+
+def test_time_no_var_expand():
+    _ip.user_ns['a'] = 5
+    _ip.user_ns['b'] = []
+    _ip.magic('time b.append("{a}")')
+    assert _ip.user_ns['b'] == ['{a}']
+
+
 # this is slow, put at the end for local testing.
-## 
 def test_timeit_arguments():
     "Test valid timeit arguments, should not cause SyntaxError (GH #1269)"
     if sys.version_info < (3,7):

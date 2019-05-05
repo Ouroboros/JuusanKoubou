@@ -107,6 +107,14 @@ class ProvisionalWarning(DeprecationWarning):
     """
     pass
 
+if sys.version_info > (3,8):
+    from ast import Module
+else :
+    # mock the new API, ignore second argument
+    # see https://github.com/ipython/ipython/issues/11590
+    from ast import Module as OriginalModule
+    Module = lambda nodelist, type_ignores: OriginalModule(nodelist)
+
 if sys.version_info > (3,6):
     _assign_nodes         = (ast.AugAssign, ast.AnnAssign, ast.Assign)
     _single_targets_nodes = (ast.AugAssign, ast.AnnAssign)
@@ -580,7 +588,7 @@ class InteractiveShell(SingletonConfigurable):
     separate_out = SeparateUnicode('').tag(config=True)
     separate_out2 = SeparateUnicode('').tag(config=True)
     wildcards_case_sensitive = Bool(True).tag(config=True)
-    xmode = CaselessStrEnum(('Context','Plain', 'Verbose'),
+    xmode = CaselessStrEnum(('Context', 'Plain', 'Verbose', 'Minimal'),
                             default_value='Context',
                             help="Switch modes for the IPython exception handlers."
                             ).tag(config=True)
@@ -1433,6 +1441,13 @@ class InteractiveShell(SingletonConfigurable):
         self.alias_manager.clear_aliases()
         self.alias_manager.init_aliases()
 
+        # Now define aliases that only make sense on the terminal, because they
+        # need direct access to the console in a way that we can't emulate in
+        # GUI or web frontend
+        if os.name == 'posix':
+            for cmd in ('clear', 'more', 'less', 'man'):
+                self.alias_manager.soft_define_alias(cmd, cmd)
+
         # Flush the private list of module references kept for script
         # execution protection
         self.clear_main_mod_cache()
@@ -1788,7 +1803,7 @@ class InteractiveShell(SingletonConfigurable):
 
         # The interactive one is initialized with an offset, meaning we always
         # want to remove the topmost item in the traceback, which is our own
-        # internal code. Valid modes: ['Plain','Context','Verbose']
+        # internal code. Valid modes: ['Plain','Context','Verbose','Minimal']
         self.InteractiveTB = ultratb.AutoFormattedTB(mode = 'Plain',
                                                      color_scheme='NoColor',
                                                      tb_offset = 1,
@@ -2220,7 +2235,8 @@ class InteractiveShell(SingletonConfigurable):
         self.register_magics(m.AutoMagics, m.BasicMagics, m.CodeMagics,
             m.ConfigMagics, m.DisplayMagics, m.ExecutionMagics,
             m.ExtensionMagics, m.HistoryMagics, m.LoggingMagics,
-            m.NamespaceMagics, m.OSMagics, m.PylabMagics, m.ScriptMagics,
+            m.NamespaceMagics, m.OSMagics, m.PackagingMagics,
+            m.PylabMagics, m.ScriptMagics,
         )
         if sys.version_info >(3,5):
             self.register_magics(m.AsyncMagics)
@@ -2273,10 +2289,14 @@ class InteractiveShell(SingletonConfigurable):
             # Note: this is the distance in the stack to the user's frame.
             # This will need to be updated if the internal calling logic gets
             # refactored, or else we'll be expanding the wrong variables.
-            
+
             # Determine stack_depth depending on where run_line_magic() has been called
             stack_depth = _stack_depth
-            magic_arg_s = self.var_expand(line, stack_depth)
+            if getattr(fn, magic.MAGIC_NO_VAR_EXPAND_ATTR, False):
+                # magic has opted out of var_expand
+                magic_arg_s = line
+            else:
+                magic_arg_s = self.var_expand(line, stack_depth)
             # Put magic args in a list so we can call with f(*a) syntax
             args = [magic_arg_s]
             kwargs = {}
@@ -2284,12 +2304,12 @@ class InteractiveShell(SingletonConfigurable):
             if getattr(fn, "needs_local_scope", False):
                 kwargs['local_ns'] = sys._getframe(stack_depth).f_locals
             with self.builtin_trap:
-                result = fn(*args,**kwargs)
+                result = fn(*args, **kwargs)
             return result
 
     def run_cell_magic(self, magic_name, line, cell):
         """Execute the given cell magic.
-        
+
         Parameters
         ----------
         magic_name : str
@@ -2318,9 +2338,18 @@ class InteractiveShell(SingletonConfigurable):
             # This will need to be updated if the internal calling logic gets
             # refactored, or else we'll be expanding the wrong variables.
             stack_depth = 2
-            magic_arg_s = self.var_expand(line, stack_depth)
+            if getattr(fn, magic.MAGIC_NO_VAR_EXPAND_ATTR, False):
+                # magic has opted out of var_expand
+                magic_arg_s = line
+            else:
+                magic_arg_s = self.var_expand(line, stack_depth)
+            kwargs = {}
+            if getattr(fn, "needs_local_scope", False):
+                kwargs['local_ns'] = sys._getframe(stack_depth).f_locals
+
             with self.builtin_trap:
-                result = fn(magic_arg_s, cell)
+                args = (magic_arg_s, cell)
+                result = fn(*args, **kwargs)
             return result
 
     def find_line_magic(self, magic_name):
@@ -3172,15 +3201,15 @@ class InteractiveShell(SingletonConfigurable):
             if _async:
                 # If interactivity is async the semantics of run_code are
                 # completely different Skip usual machinery.
-                mod = ast.Module(nodelist)
-                async_wrapper_code = compiler(mod, 'cell_name', 'exec')
+                mod = Module(nodelist, [])
+                async_wrapper_code = compiler(mod, cell_name, 'exec')
                 exec(async_wrapper_code, self.user_global_ns, self.user_ns)
                 async_code = removed_co_newlocals(self.user_ns.pop('async-def-wrapper')).__code__
                 if (yield from self.run_code(async_code, result, async_=True)):
                     return True
             else:
                 for i, node in enumerate(to_run_exec):
-                    mod = ast.Module([node])
+                    mod = Module([node], [])
                     code = compiler(mod, cell_name, "exec")
                     if (yield from self.run_code(code, result)):
                         return True
@@ -3460,9 +3489,8 @@ class InteractiveShell(SingletonConfigurable):
         self.tempfiles.append(filename)
 
         if data:
-            tmp_file = open(filename,'w')
-            tmp_file.write(data)
-            tmp_file.close()
+            with open(filename, 'w') as tmp_file:
+                tmp_file.write(data)
         return filename
 
     @undoc

@@ -415,7 +415,7 @@ class Frame(object):
                 DynamicContainer(lambda: self.body),
                 fill(width=1, char=Border.VERTICAL),
                     # Padding is required to make sure that if the content is
-                    # too small, that the right frame border is still aligned.
+                    # too small, the right frame border is still aligned.
             ], padding=0),
             VSplit([
                 fill(width=1, height=1, char=Border.BOTTOM_LEFT),
@@ -626,6 +626,15 @@ class RadioList(object):
             dont_extend_height=True)
 
     def _get_text_fragments(self):
+        def mouse_handler(mouse_event):
+            """
+            Set `_selected_index` and `current_value` according to the y
+            position of the mouse click event.
+            """
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._selected_index = mouse_event.position.y
+                self.current_value = self.values[self._selected_index][0]
+
         result = []
         for i, value in enumerate(self.values):
             checked = (value[0] == self.current_value)
@@ -651,6 +660,10 @@ class RadioList(object):
             result.append(('class:radio', ' '))
             result.extend(to_formatted_text(value[1], style='class:radio'))
             result.append(('', '\n'))
+
+        # Add mouse handler to all fragments.
+        for i in range(len(result)):
+            result[i] = (result[i][0], result[i][1], mouse_handler)
 
         result.pop()  # Remove last newline.
         return result
@@ -695,9 +708,9 @@ class ProgressBar(object):
         self.container = FloatContainer(
             content=Window(height=1),
             floats=[
-                # We first draw the label, than the actual progress bar.  Right
+                # We first draw the label, then the actual progress bar.  Right
                 # now, this is the only way to have the colors of the progress
-                # bar appear on to of the label. The problem is that our label
+                # bar appear on top of the label. The problem is that our label
                 # can't be part of any `Window` below.
                 Float(content=self.label, top=0, bottom=0),
 

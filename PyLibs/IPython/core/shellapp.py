@@ -181,9 +181,26 @@ class InteractiveShellApp(Configurable):
             self.shell.init_user_ns()
 
     def init_path(self):
-        """Add current working directory, '', to sys.path"""
-        if sys.path[0] != '':
-            sys.path.insert(0, '')
+        """Add current working directory, '', to sys.path
+
+        Unlike Python's default, we insert before the first `site-packages`
+        or `dist-packages` directory,
+        so that it is after the standard library.
+
+        .. versionchanged:: 7.2
+            Try to insert after the standard library, instead of first.
+        """
+        if '' in sys.path:
+            return
+        for idx, path in enumerate(sys.path):
+            parent, last_part = os.path.split(path)
+            if last_part in {'site-packages', 'dist-packages'}:
+                break
+        else:
+            # no site-packages or dist-packages found (?!)
+            # back to original behavior of inserting at the front
+            idx = 0
+        sys.path.insert(idx, '')
 
     def init_shell(self):
         raise NotImplementedError("Override in subclasses")
@@ -312,7 +329,7 @@ class InteractiveShellApp(Configurable):
                 # behavior.
                 with preserve_keys(self.shell.user_ns, '__file__'):
                     self.shell.user_ns['__file__'] = fname
-                    if full_filename.endswith('.ipy'):
+                    if full_filename.endswith('.ipy') or full_filename.endswith('.ipynb'):
                         self.shell.safe_execfile_ipy(full_filename,
                                                      shell_futures=shell_futures)
                     else:

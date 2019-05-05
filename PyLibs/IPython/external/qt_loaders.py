@@ -68,7 +68,7 @@ def commit_api(api):
         ID.forbid('PySide')
         ID.forbid('PyQt4')
         ID.forbid('PyQt5')
-    if api == QT_API_PYSIDE:
+    elif api == QT_API_PYSIDE:
         ID.forbid('PySide2')
         ID.forbid('PyQt4')
         ID.forbid('PyQt5')
@@ -217,10 +217,9 @@ def import_pyqt5():
 
     ImportErrors rasied within this function are non-recoverable
     """
-    import sip
 
     from PyQt5 import QtCore, QtSvg, QtWidgets, QtGui
-
+    
     # Alias PyQt-specific functions for PySide compatibility.
     QtCore.Signal = QtCore.pyqtSignal
     QtCore.Slot = QtCore.pyqtSlot

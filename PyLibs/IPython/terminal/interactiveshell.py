@@ -225,6 +225,10 @@ class TerminalInteractiveShell(InteractiveShell):
         help="Allows to enable/disable the prompt toolkit history search"
     ).tag(config=True)
 
+    prompt_includes_vi_mode = Bool(True,
+        help="Display the current vi mode (when using vi editing mode)."
+    ).tag(config=True)
+
     @observe('term_title')
     def init_term_title(self, change=None):
         # Enable or disable the terminal title.
@@ -284,7 +288,7 @@ class TerminalInteractiveShell(InteractiveShell):
                             include_default_pygments_style=False,
                             mouse_support=self.mouse_support,
                             enable_open_in_editor=self.extra_open_editor_shortcuts,
-                            color_depth=(ColorDepth.TRUE_COLOR if self.true_color else None),
+                            color_depth=self.color_depth,
                             **self._extra_prompt_options())
 
     def _make_style_from_name_or_cls(self, name_or_cls):
@@ -360,6 +364,10 @@ class TerminalInteractiveShell(InteractiveShell):
             'column': CompleteStyle.COLUMN,
             'readlinelike': CompleteStyle.READLINE_LIKE,
         }[self.display_completions]
+
+    @property
+    def color_depth(self):
+        return (ColorDepth.TRUE_COLOR if self.true_color else None)
 
     def _extra_prompt_options(self):
         """
@@ -443,7 +451,7 @@ class TerminalInteractiveShell(InteractiveShell):
         # need direct access to the console in a way that we can't emulate in
         # GUI or web frontend
         if os.name == 'posix':
-            for cmd in ['clear', 'more', 'less', 'man']:
+            for cmd in ('clear', 'more', 'less', 'man'):
                 self.alias_manager.soft_define_alias(cmd, cmd)
 
 

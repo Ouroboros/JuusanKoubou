@@ -201,7 +201,7 @@ class InstructionDescriptor:
     def __str__(self):
         return ' '.join([
             f'{self.opcode:02X} {self.mnemonic}',
-            self.operands and f'{self.operands}'or '()',
+            '(%s)' % (', '.join([str(o) for o in self.operands]) if self.operands else ''),
             f'{self.flags}' if self.flags != instruction.Flags.Empty else '',
         ])
 

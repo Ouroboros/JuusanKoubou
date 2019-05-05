@@ -61,5 +61,6 @@
     "git.path": "D:/Dev/PortableGit/bin/git.exe",
     "git.ignoreMissingGitWarning": true,
     "explorer.confirmDelete": false,
-    "files.eol": "\n"
+    "files.eol": "\n",
+    "extensions.ignoreRecommendations": false
 }

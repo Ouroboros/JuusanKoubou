@@ -8,9 +8,9 @@ itself from the command line. There are two ways of running this script:
    calling this script (with different arguments) recursively.  This
    causes modules and package to be tested in different processes, using nose
    or trial where appropriate.
-2. With the regular nose syntax, like `iptest -vvs IPython`.  In this form
+2. With the regular nose syntax, like `iptest IPython -- -vvs`. In this form
    the script simply calls nose, but with special command line flags and
-   plugins loaded.
+   plugins loaded. Options after `--` are passed to nose.
 
 """
 
@@ -37,7 +37,7 @@ from IPython import version_info
 from IPython.utils.py3compat import decode
 from IPython.utils.importstring import import_item
 from IPython.testing.plugin.ipdoctest import IPythonDoctest
-from IPython.external.decorators import KnownFailure, knownfailureif
+from IPython.external.decorators import KnownFailure, dec
 
 pjoin = path.join
 
@@ -83,7 +83,7 @@ else:
 # ------------------------------------------------------------------------------
 def monkeypatch_xunit():
     try:
-        knownfailureif(True)(lambda: None)()
+        dec.knownfailureif(True)(lambda: None)()
     except Exception as e:
         KnownFailureTest = type(e)
 

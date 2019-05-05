@@ -458,7 +458,7 @@ class Application(object):
         # Remove all the original event handlers. (Components can be removed
         # from the UI.)
         for ev in self._invalidate_events:
-            ev -= self.invalidate
+            ev -= self._invalidate_handler
 
         # Gather all new events.
         # (All controls are able to invalidate themselves.)
@@ -469,12 +469,18 @@ class Application(object):
 
         self._invalidate_events = list(gather_events())
 
-        # Attach invalidate event handler.
-        def invalidate(sender):
-            self.invalidate()
-
         for ev in self._invalidate_events:
-            ev += invalidate
+            ev += self._invalidate_handler
+
+    def _invalidate_handler(self, sender):
+        """
+        Handler for invalidate events coming from UIControls.
+
+        (This handles the difference in signature between event handler and
+        `self.invalidate`. It also needs to be a method -not a nested
+        function-, so that we can remove it again .)
+        """
+        self.invalidate()
 
     def _on_resize(self):
         """
@@ -518,7 +524,7 @@ class Application(object):
                 application.run_async().to_asyncio_future())
 
         """
-        assert not self._is_running
+        assert not self._is_running, 'Application is already running.'
 
         def _run_async():
             " Coroutine. "
@@ -623,7 +629,7 @@ class Application(object):
                             # invalidate should not trigger a repaint in
                             # terminated applications.)
                             for ev in self._invalidate_events:
-                                ev -= self.invalidate
+                                ev -= self._invalidate_handler
                             self._invalidate_events = []
 
                             # Wait for CPR responses.
@@ -651,7 +657,11 @@ class Application(object):
                     f = From(_run_async())
                     result = yield f
                 finally:
-                    assert not self._is_running
+                    # Set the `_is_running` flag to `False`. Normally this
+                    # happened already in the finally block in `run_async`
+                    # above, but in case of exceptions, that's not always the
+                    # case.
+                    self._is_running = False
                 raise Return(result)
 
         return ensure_future(_run_async2())
@@ -728,8 +738,13 @@ class Application(object):
         """
         assert result is None or exception is None
 
+        if self.future is None:
+            raise Exception(
+                'Application is not running. Application.exit() failed.')
+
         if self.future.done():
-            raise Exception('Return value already set.')
+            raise Exception(
+                'Return value already set. Application.exit() failed.')
 
         self.exit_style = style
 

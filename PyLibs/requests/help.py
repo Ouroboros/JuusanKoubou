@@ -6,13 +6,14 @@ import platform
 import sys
 import ssl
 
+import idna
 import urllib3
 import chardet
 
 from . import __version__ as requests_version
 
 try:
-    from .packages.urllib3.contrib import pyopenssl
+    from urllib3.contrib import pyopenssl
 except ImportError:
     pyopenssl = None
     OpenSSL = None
@@ -23,7 +24,7 @@ else:
 
 
 def _implementation():
-    """Return a dict with the Python implementation and verison.
+    """Return a dict with the Python implementation and version.
 
     Provide both the name and the version of the Python implementation
     currently running. For example, on CPython 2.7.5 it will return
@@ -44,7 +45,7 @@ def _implementation():
         if sys.pypy_version_info.releaselevel != 'final':
             implementation_version = ''.join([
                 implementation_version, sys.pypy_version_info.releaselevel
-                ])
+            ])
     elif implementation == 'Jython':
         implementation_version = platform.python_version()  # Complete Guess
     elif implementation == 'IronPython':
@@ -84,27 +85,35 @@ def info():
     cryptography_info = {
         'version': getattr(cryptography, '__version__', ''),
     }
+    idna_info = {
+        'version': getattr(idna, '__version__', ''),
+    }
+
+    system_ssl = ssl.OPENSSL_VERSION_NUMBER
+    system_ssl_info = {
+        'version': '%x' % system_ssl if system_ssl is not None else ''
+    }
 
     return {
         'platform': platform_info,
         'implementation': implementation_info,
-        'system_ssl': {
-            'version': '%x' % ssl.OPENSSL_VERSION_NUMBER,
-        },
+        'system_ssl': system_ssl_info,
         'using_pyopenssl': pyopenssl is not None,
         'pyOpenSSL': pyopenssl_info,
         'urllib3': urllib3_info,
         'chardet': chardet_info,
         'cryptography': cryptography_info,
+        'idna': idna_info,
         'requests': {
             'version': requests_version,
         },
     }
 
+
 def main():
     """Pretty-print the bug information as JSON."""
     print(json.dumps(info(), sort_keys=True, indent=2))
 
+
 if __name__ == '__main__':
     main()
-

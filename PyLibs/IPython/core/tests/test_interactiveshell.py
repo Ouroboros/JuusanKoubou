@@ -495,6 +495,16 @@ class InteractiveShellTestCase(unittest.TestCase):
         self.assertFalse(ip.last_execution_result.success)
         self.assertIsInstance(ip.last_execution_result.error_in_exec, NameError)
 
+    def test_reset_aliasing(self):
+        """ Check that standard posix aliases work after %reset. """
+        if os.name != 'posix':
+            return
+
+        ip.reset()
+        for cmd in ('clear', 'more', 'less', 'man'):
+            res = ip.run_cell('%' + cmd)
+            self.assertEqual(res.success, True)
+
 
 class TestSafeExecfileNonAsciiPath(unittest.TestCase):
 
@@ -599,8 +609,16 @@ class TestModules(tt.TempFileMixin, unittest.TestCase):
 
 class Negator(ast.NodeTransformer):
     """Negates all number literals in an AST."""
+
+    # for python 3.7 and earlier
     def visit_Num(self, node):
         node.n = -node.n
+        return node
+
+    # for python 3.8+
+    def visit_Constant(self, node):
+        if isinstance(node.value, int):
+            return self.visit_Num(node)
         return node
 
 class TestAstTransform(unittest.TestCase):
@@ -664,11 +682,22 @@ class TestAstTransform(unittest.TestCase):
 
 class IntegerWrapper(ast.NodeTransformer):
     """Wraps all integers in a call to Integer()"""
+
+    # for Python 3.7 and earlier
+
+    # for Python 3.7 and earlier
     def visit_Num(self, node):
         if isinstance(node.n, int):
             return ast.Call(func=ast.Name(id='Integer', ctx=ast.Load()),
                             args=[node], keywords=[])
         return node
+
+    # For Python 3.8+
+    def visit_Constant(self, node):
+        if isinstance(node.value, int):
+            return self.visit_Num(node)
+        return node
+
 
 class TestAstTransform2(unittest.TestCase):
     def setUp(self):
@@ -710,8 +739,17 @@ class TestAstTransform2(unittest.TestCase):
 
 class ErrorTransformer(ast.NodeTransformer):
     """Throws an error when it sees a number."""
+
+    # for Python 3.7 and earlier
     def visit_Num(self, node):
         raise ValueError("test")
+
+    # for Python 3.8+
+    def visit_Constant(self, node):
+        if isinstance(node.value, int):
+            return self.visit_Num(node)
+        return node
+
 
 class TestAstTransformError(unittest.TestCase):
     def test_unregistering(self):
@@ -731,9 +769,16 @@ class StringRejector(ast.NodeTransformer):
     Used to verify that NodeTransformers can signal that a piece of code should
     not be executed by throwing an InputRejected.
     """
-
+    
+    #for python 3.7 and earlier
     def visit_Str(self, node):
         raise InputRejected("test")
+
+    # 3.8 only
+    def visit_Constant(self, node):
+        if isinstance(node.value, str):
+            raise InputRejected("test")
+        return node
 
 
 class TestAstTransformInputRejection(unittest.TestCase):

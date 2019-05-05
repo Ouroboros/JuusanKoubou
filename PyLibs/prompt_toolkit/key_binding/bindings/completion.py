@@ -4,9 +4,9 @@ Key binding handlers for displaying completions.
 from __future__ import unicode_literals
 from prompt_toolkit.application.run_in_terminal import run_coroutine_in_terminal
 from prompt_toolkit.completion import CompleteEvent, get_common_complete_suffix
-from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.keys import Keys
 from prompt_toolkit.key_binding.key_bindings import KeyBindings
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.utils import get_cwidth
 
 import math
 
@@ -73,6 +73,7 @@ def _display_completions_like_readline(app, completions):
     on a single page and provide a paginator to walk through them.
     """
     from prompt_toolkit.shortcuts.prompt import create_confirm_session
+    from prompt_toolkit.formatted_text import to_formatted_text
     assert isinstance(completions, list)
 
     # Get terminal dimensions.
@@ -84,7 +85,7 @@ def _display_completions_like_readline(app, completions):
     # completions. (Keep in mind that completions are displayed
     # alphabetically column-wise.)
     max_compl_width = min(term_width,
-        max(get_cwidth(c.text) for c in completions) + 1)
+        max(get_cwidth(c.display_text) for c in completions) + 1)
     column_count = max(1, term_width // max_compl_width)
     completions_per_page = column_count * (term_height - 1)
     page_count = int(math.ceil(len(completions) / float(completions_per_page)))
@@ -99,17 +100,24 @@ def _display_completions_like_readline(app, completions):
         page_columns = [page_completions[i * page_row_count:(i + 1) * page_row_count]
                    for i in range(column_count)]
 
-        result = []
+        result = []  # FormattedText list: (style,text) tuples.
+
         for r in range(page_row_count):
             for c in range(column_count):
                 try:
-                    result.append(page_columns[c][r].text.ljust(max_compl_width))
+                    completion = page_columns[c][r]
+                    style = 'class:readline-like-completions.completion ' + (completion.style or '')
+
+                    result.extend(to_formatted_text(completion.display, style=style))
+
+                    # Add padding.
+                    padding = max_compl_width - get_cwidth(completion.display_text)
+                    result.append((completion.style, ' ' * padding,))
                 except IndexError:
                     pass
-            result.append('\n')
+            result.append(('', '\n'))
 
-        app.output.write(''.join(result))
-        app.output.flush()
+        app.print_text(to_formatted_text(result, 'class:readline-like-completions'))
 
     # User interaction through an application generator function.
     def run_compl():
