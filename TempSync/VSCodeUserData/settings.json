@@ -62,5 +62,6 @@
     "git.ignoreMissingGitWarning": true,
     "explorer.confirmDelete": false,
     "files.eol": "\n",
-    "extensions.ignoreRecommendations": false
+    "extensions.ignoreRecommendations": false,
+    "remote.SSH.configFile": "D:\\Dev\\VSCode\\ssh\\ssh_config"
 }

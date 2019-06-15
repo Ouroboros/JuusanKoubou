@@ -47,7 +47,7 @@ def dot_completion(view):
         return True
 
     for trigger in view.settings().get('auto_complete_triggers', []):
-        if trigger.get('character', '') == '.':
+        if trigger.get('characters', '') == '.':
             if 'source.python' in trigger.get('selector'):
                 return True
 
@@ -66,7 +66,7 @@ def enable_dot_completion(view):
     triggers = view.settings().get('auto_complete_triggers', [])
     triggers.append({
         'characters': '.',
-        'selector': 'source.python - string - constant.numeric'
+        'selector': 'source.python - string - comment - constant.numeric'
     })
     view.settings().set('auto_complete_triggers', triggers)
 
@@ -208,7 +208,15 @@ def get_settings(view, name, default=None):
     if (name in ('python_interpreter', 'extra_paths') and not
             ENVIRON_HOOK_INVALID[view.id()]):
         if view.window() is not None and view.window().folders():
-            dirname = view.window().folders()[0]
+            allow_multiple_env_hooks = get_settings(
+                view,
+                'anaconda_allow_project_environment_hooks',
+                False
+            )
+            if allow_multiple_env_hooks:
+                dirname = os.path.dirname(view.file_name())
+            else:
+                dirname = view.window().folders()[0]
             while True:
                 environfile = os.path.join(dirname, '.anaconda')
                 if os.path.exists(environfile) and os.path.isfile(environfile):
@@ -267,8 +275,8 @@ def expand(view, path):
 
     window = view.window()
     if window is not None:
-        tmp = sublime.expand_variables(path, window.extract_variables())
-        tmp = os.path.expanduser(os.path.expandvars(tmp))
+        tmp = os.path.expanduser(os.path.expandvars(path))
+        tmp = sublime.expand_variables(tmp, window.extract_variables())
     else:
         return path
 
@@ -370,6 +378,17 @@ def get_window_view(vid):
         view = get_view(window, vid)
         if view is not None:
             return view
+
+
+def get_socket_timeout(default):
+    """
+    Some systems with weird enterprise security stuff can take a while
+    to return a socket - permit overrides to default timeouts. Same thing
+    occurs with certain other sublime plugins added. This lets the user
+    set a timeout appropriate to their system without swallowing all
+    startup errors
+    """
+    return get_settings(active_view(), 'socket_timeout', default)
 
 
 def cache(func):
