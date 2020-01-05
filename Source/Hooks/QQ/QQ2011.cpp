@@ -151,19 +151,19 @@ typedef struct
 static DLL_HOOK_ENTRY Hooks[] =
 {
     { IUSTR(L"AppUtil.dll"),        HookAppUtil },
-    { IUSTR(L"Common.dll"),         HookCommon },
-    { IUSTR(L"KernelUtil.dll"),     HookKernelUtil },
+    // { IUSTR(L"Common.dll"),         HookCommon },
+    // { IUSTR(L"KernelUtil.dll"),     HookKernelUtil },
 
     //{ IUSTR(L"GroupApp.dll"),   HookGroupApp },
 
     { IUSTR(L"AppMisc.dll"),        HookAppMisc },
-    { IUSTR(L"MainFrame.dll"),      HookMainFrame },
+    // { IUSTR(L"MainFrame.dll"),      HookMainFrame },
     { IUSTR(L"ntdll.dll"),          HookNtdll },
 
     //{ IUSTR(L"psapi.dll"),          HookPsapi },
 
-    { IUSTR(L"user32.dll"),         HookUser32 },
-    { IUSTR(L"Camera.dll"),         HookCamera },
+    //{ IUSTR(L"user32.dll"),         HookUser32 },
+    // { IUSTR(L"Camera.dll"),         HookCamera },
     { IUSTR(L"IM.dll"),             HookIM },
 
     //{ IUSTR(L"AppFramework.dll"),   HookAppFramework },

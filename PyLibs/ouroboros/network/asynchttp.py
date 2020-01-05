@@ -74,8 +74,8 @@ class _ClientRequest(aiohttp.client.ClientRequest):
 
         self.headers['Cookie'] = c.output(header='', sep=';', attrs = {}).strip()
 
-class AsyncHttp(object):
-    class Response(object):
+class AsyncHttp:
+    class Response:
         def __init__(self, response, content):
             self.response = response
             self.content = content
@@ -206,8 +206,10 @@ class AsyncHttp(object):
         if self.proxyAuth:
             kwargs['proxy_auth'] = self.proxyAuth
 
+        import datetime
+
         try:
-            response = await asyncio.wait_for(self.session.request(method, url, **kwargs), self.timeout)
+            response = await self.session.request(method, url, timeout = self.timeout, **kwargs)
             content = await asyncio.wait_for(response.read(), self.timeout)
         except asyncio.TimeoutError:
             raise asyncio.TimeoutError('%s %s timeout: %s' % (method, url, self.timeout))

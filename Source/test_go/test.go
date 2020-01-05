@@ -1,28 +1,14 @@
 package main
 
-import (
-    . "ml/strings"
-    . "ml/dict"
-    "fmt"
-    "os"
-    "time"
-    "ml/net/http"
-    "ml/encoding/json"
-    "ml/console"
-    "ml/logging/logger"
-    "ml/random"
-    "ml/html"
-    "net"
-    "ml/io2"
-    "plistlib"
-    "reflect"
-    "regexp"
-)
+type PutExtra struct {
+    UpHost string
+}
+
+func put(e *PutExtra) error {
+    println(e.UpHost)
+    return nil
+}
 
 func main() {
-    for {
-        if random.IntRange(0, 100) == 0 {
-            fmt.Println("fuck")
-        }
-    }
+    put(nil)
 }

@@ -65,7 +65,7 @@ NTSTATUS HookAppMisc(PVOID BaseAddress)
     Mp::PATCH_MEMORY_DATA Function_AppMisc[] =
     {
         Mp::FunctionJumpVa(SearchAppMisc_PluginListCheck(BaseAddress),    CheckPluginList), // addition SetTimeOut
-        Mp::FunctionJumpVa(SearchAppMisc_ShowPicInMultiPic(BaseAddress),  ShowDBClickPicture, &StubShowDBClickPicture),
+        //Mp::FunctionJumpVa(SearchAppMisc_ShowPicInMultiPic(BaseAddress),  ShowDBClickPicture, &StubShowDBClickPicture),
     };
 
     return Mp::PatchMemory(Function_AppMisc, countof(Function_AppMisc), BaseAddress);

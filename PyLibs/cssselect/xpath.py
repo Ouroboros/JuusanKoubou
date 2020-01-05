@@ -114,7 +114,7 @@ class GenericTranslator(object):
     ####
     ####  You are welcome to hook into this to change some behavior,
     ####  but do so at your own risks.
-    ####  Until is has recieved a lot more work and review,
+    ####  Until it has received a lot more work and review,
     ####  I reserve the right to change this API in backward-incompatible ways
     ####  with any minor version of cssselect.
     ####  See https://github.com/scrapy/cssselect/pull/22
@@ -308,10 +308,12 @@ class GenericTranslator(object):
             attrib = '@' + name
         else:
             attrib = 'attribute::*[name() = %s]' % self.xpath_literal(name)
-        if self.lower_case_attribute_values:
-            value = selector.value.lower()
+        if selector.value is None:
+            value = None
+        elif self.lower_case_attribute_values:
+            value = selector.value.value.lower()
         else:
-            value = selector.value
+            value = selector.value.value
         return method(self.xpath(selector.selector), attrib, value)
 
     def xpath_class(self, class_selector):
@@ -490,7 +492,7 @@ class GenericTranslator(object):
             b_neg = (-b_min_1) % abs(a)
 
             if b_neg != 0:
-                b_neg = '+%s' % (b_neg)
+                b_neg = '+%s' % b_neg
                 left = '(%s %s)' % (left, b_neg)
 
             expr.append('%s mod %s = 0' % (left, a))
@@ -540,6 +542,14 @@ class GenericTranslator(object):
 
     def xpath_root_pseudo(self, xpath):
         return xpath.add_condition("not(parent::*)")
+
+    # CSS immediate children (CSS ":scope > div" to XPath "child::div" or "./div")
+    # Works only at the start of a selector
+    # Needed to get immediate children of a processed selector in Scrapy
+    # for product in response.css('.product'):
+    #     description = product.css(':scope > div::text').get()
+    def xpath_scope_pseudo(self, xpath):
+        return xpath.add_condition("1")
 
     def xpath_first_child_pseudo(self, xpath):
         return xpath.add_condition('count(preceding-sibling::*) = 0')

@@ -77,11 +77,10 @@ from .instagram import InstagramIE
 from .liveleak import LiveLeakIE
 from .threeqsdn import ThreeQSDNIE
 from .theplatform import ThePlatformIE
-from .vessel import VesselIE
 from .kaltura import KalturaIE
 from .eagleplatform import EaglePlatformIE
 from .facebook import FacebookIE
-from .soundcloud import SoundcloudIE
+from .soundcloud import SoundcloudEmbedIE
 from .tunein import TuneInBaseIE
 from .vbox7 import Vbox7IE
 from .dbtv import DBTVIE
@@ -89,7 +88,10 @@ from .piksel import PikselIE
 from .videa import VideaIE
 from .twentymin import TwentyMinutenIE
 from .ustream import UstreamIE
-from .openload import OpenloadIE
+from .openload import (
+    OpenloadIE,
+    VerystreamIE,
+)
 from .videopress import VideoPressIE
 from .rutube import RutubeIE
 from .limelight import LimelightBaseIE
@@ -116,6 +118,8 @@ from .foxnews import FoxNewsIE
 from .viqeo import ViqeoIE
 from .expressen import ExpressenIE
 from .zype import ZypeIE
+from .odnoklassniki import OdnoklassnikiIE
+from .kinja import KinjaEmbedIE
 
 
 class GenericIE(InfoExtractor):
@@ -1484,16 +1488,18 @@ class GenericIE(InfoExtractor):
                 'timestamp': 1432570283,
             },
         },
-        # OnionStudios embed
+        # Kinja embed
         {
             'url': 'http://www.clickhole.com/video/dont-understand-bitcoin-man-will-mumble-explanatio-2537',
             'info_dict': {
-                'id': '2855',
+                'id': '106351',
                 'ext': 'mp4',
                 'title': 'Don’t Understand Bitcoin? This Man Will Mumble An Explanation At You',
+                'description': 'Migrated from OnionStudios',
                 'thumbnail': r're:^https?://.*\.jpe?g$',
-                'uploader': 'ClickHole',
-                'uploader_id': 'clickhole',
+                'uploader': 'clickhole',
+                'upload_date': '20150527',
+                'timestamp': 1432744860,
             }
         },
         # SnagFilms embed
@@ -2073,6 +2079,22 @@ class GenericIE(InfoExtractor):
             'playlist_count': 6,
         },
         {
+            # Squarespace video embed, 2019-08-28
+            'url': 'http://ootboxford.com',
+            'info_dict': {
+                'id': 'Tc7b_JGdZfw',
+                'title': 'Out of the Blue, at Childish Things 10',
+                'ext': 'mp4',
+                'description': 'md5:a83d0026666cf5ee970f8bd1cfd69c7f',
+                'uploader_id': 'helendouglashouse',
+                'uploader': 'Helen & Douglas House',
+                'upload_date': '20140328',
+            },
+            'params': {
+                'skip_download': True,
+            },
+        },
+        {
             # Zype embed
             'url': 'https://www.cookscountry.com/episode/554-smoky-barbecue-favorites',
             'info_dict': {
@@ -2100,6 +2122,23 @@ class GenericIE(InfoExtractor):
                 'skip_download': True,
             },
             'expected_warnings': ['Failed to download MPD manifest'],
+        },
+        {
+            # DailyMotion embed with DM.player
+            'url': 'https://www.beinsports.com/us/copa-del-rey/video/the-locker-room-valencia-beat-barca-in-copa/1203804',
+            'info_dict': {
+                'id': 'k6aKkGHd9FJs4mtJN39',
+                'ext': 'mp4',
+                'title': 'The Locker Room: Valencia Beat Barca In Copa del Rey Final',
+                'description': 'This video is private.',
+                'uploader_id': 'x1jf30l',
+                'uploader': 'beIN SPORTS USA',
+                'upload_date': '20190528',
+                'timestamp': 1559062971,
+            },
+            'params': {
+                'skip_download': True,
+            },
         },
         # {
         #     # TODO: find another test
@@ -2206,7 +2245,7 @@ class GenericIE(InfoExtractor):
                 default_search = 'fixup_error'
 
             if default_search in ('auto', 'auto_warning', 'fixup_error'):
-                if '/' in url:
+                if re.match(r'^[^\s/]+\.[^\s/]+/', url):
                     self._downloader.report_warning('The url doesn\'t specify the protocol, trying with http')
                     return self.url_result('http://' + url)
                 elif default_search != 'fixup_error':
@@ -2375,6 +2414,12 @@ class GenericIE(InfoExtractor):
         # Unescaping the whole page allows to handle those cases in a generic way
         webpage = compat_urllib_parse_unquote(webpage)
 
+        # Unescape squarespace embeds to be detected by generic extractor,
+        # see https://github.com/ytdl-org/youtube-dl/issues/21294
+        webpage = re.sub(
+            r'<div[^>]+class=[^>]*?\bsqs-video-wrapper\b[^>]*>',
+            lambda x: unescapeHTML(x.group(0)), webpage)
+
         # it's tempting to parse this further, but you would
         # have to take into account all the variations like
         #   Video Title - Site Name
@@ -2448,11 +2493,6 @@ class GenericIE(InfoExtractor):
         tp_urls = ThePlatformIE._extract_urls(webpage)
         if tp_urls:
             return self.playlist_from_matches(tp_urls, video_id, video_title, ie='ThePlatform')
-
-        # Look for Vessel embeds
-        vessel_urls = VesselIE._extract_urls(webpage)
-        if vessel_urls:
-            return self.playlist_from_matches(vessel_urls, video_id, video_title, ie=VesselIE.ie_key())
 
         # Look for embedded rtl.nl player
         matches = re.findall(
@@ -2546,11 +2586,11 @@ class GenericIE(InfoExtractor):
             return self.url_result(mobj.group('url'))
 
         # Look for Ooyala videos
-        mobj = (re.search(r'player\.ooyala\.com/[^"?]+[?#][^"]*?(?:embedCode|ec)=(?P<ec>[^"&]+)', webpage) or
-                re.search(r'OO\.Player\.create\([\'"].*?[\'"],\s*[\'"](?P<ec>.{32})[\'"]', webpage) or
-                re.search(r'OO\.Player\.create\.apply\(\s*OO\.Player\s*,\s*op\(\s*\[\s*[\'"][^\'"]*[\'"]\s*,\s*[\'"](?P<ec>.{32})[\'"]', webpage) or
-                re.search(r'SBN\.VideoLinkset\.ooyala\([\'"](?P<ec>.{32})[\'"]\)', webpage) or
-                re.search(r'data-ooyala-video-id\s*=\s*[\'"](?P<ec>.{32})[\'"]', webpage))
+        mobj = (re.search(r'player\.ooyala\.com/[^"?]+[?#][^"]*?(?:embedCode|ec)=(?P<ec>[^"&]+)', webpage)
+                or re.search(r'OO\.Player\.create\([\'"].*?[\'"],\s*[\'"](?P<ec>.{32})[\'"]', webpage)
+                or re.search(r'OO\.Player\.create\.apply\(\s*OO\.Player\s*,\s*op\(\s*\[\s*[\'"][^\'"]*[\'"]\s*,\s*[\'"](?P<ec>.{32})[\'"]', webpage)
+                or re.search(r'SBN\.VideoLinkset\.ooyala\([\'"](?P<ec>.{32})[\'"]\)', webpage)
+                or re.search(r'data-ooyala-video-id\s*=\s*[\'"](?P<ec>.{32})[\'"]', webpage))
         if mobj is not None:
             embed_token = self._search_regex(
                 r'embedToken[\'"]?\s*:\s*[\'"]([^\'"]+)',
@@ -2580,19 +2620,6 @@ class GenericIE(InfoExtractor):
         if mobj is not None:
             return self.url_result(mobj.group(1), 'Mpora')
 
-        # Look for embedded NovaMov-based player
-        mobj = re.search(
-            r'''(?x)<(?:pagespeed_)?iframe[^>]+?src=(["\'])
-                    (?P<url>http://(?:(?:embed|www)\.)?
-                        (?:novamov\.com|
-                           nowvideo\.(?:ch|sx|eu|at|ag|co)|
-                           videoweed\.(?:es|com)|
-                           movshare\.(?:net|sx|ag)|
-                           divxstage\.(?:eu|net|ch|co|at|ag))
-                        /embed\.php.+?)\1''', webpage)
-        if mobj is not None:
-            return self.url_result(mobj.group('url'))
-
         # Look for embedded Facebook player
         facebook_urls = FacebookIE._extract_urls(webpage)
         if facebook_urls:
@@ -2604,9 +2631,9 @@ class GenericIE(InfoExtractor):
             return self.url_result(mobj.group('url'), 'VK')
 
         # Look for embedded Odnoklassniki player
-        mobj = re.search(r'<iframe[^>]+?src=(["\'])(?P<url>https?://(?:odnoklassniki|ok)\.ru/videoembed/.+?)\1', webpage)
-        if mobj is not None:
-            return self.url_result(mobj.group('url'), 'Odnoklassniki')
+        odnoklassniki_url = OdnoklassnikiIE._extract_url(webpage)
+        if odnoklassniki_url:
+            return self.url_result(odnoklassniki_url, OdnoklassnikiIE.ie_key())
 
         # Look for embedded ivi player
         mobj = re.search(r'<embed[^>]+?src=(["\'])(?P<url>https?://(?:www\.)?ivi\.ru/video/player.+?)\1', webpage)
@@ -2725,9 +2752,9 @@ class GenericIE(InfoExtractor):
             return self.url_result(myvi_url)
 
         # Look for embedded soundcloud player
-        soundcloud_urls = SoundcloudIE._extract_urls(webpage)
+        soundcloud_urls = SoundcloudEmbedIE._extract_urls(webpage)
         if soundcloud_urls:
-            return self.playlist_from_matches(soundcloud_urls, video_id, video_title, getter=unescapeHTML, ie=SoundcloudIE.ie_key())
+            return self.playlist_from_matches(soundcloud_urls, video_id, video_title, getter=unescapeHTML)
 
         # Look for tunein player
         tunein_urls = TuneInBaseIE._extract_urls(webpage)
@@ -2870,6 +2897,12 @@ class GenericIE(InfoExtractor):
         if senate_isvp_url:
             return self.url_result(senate_isvp_url, 'SenateISVP')
 
+        # Look for Kinja embeds
+        kinja_embed_urls = KinjaEmbedIE._extract_urls(webpage, url)
+        if kinja_embed_urls:
+            return self.playlist_from_matches(
+                kinja_embed_urls, video_id, video_title)
+
         # Look for OnionStudios embeds
         onionstudios_url = OnionStudiosIE._extract_url(webpage)
         if onionstudios_url:
@@ -2939,10 +2972,14 @@ class GenericIE(InfoExtractor):
 
         # Look for Mangomolo embeds
         mobj = re.search(
-            r'''(?x)<iframe[^>]+src=(["\'])(?P<url>(?:https?:)?//(?:www\.)?admin\.mangomolo\.com/analytics/index\.php/customers/embed/
+            r'''(?x)<iframe[^>]+src=(["\'])(?P<url>(?:https?:)?//
+                (?:
+                    admin\.mangomolo\.com/analytics/index\.php/customers/embed|
+                    player\.mangomolo\.com/v1
+                )/
                 (?:
                     video\?.*?\bid=(?P<video_id>\d+)|
-                    index\?.*?\bchannelid=(?P<channel_id>(?:[A-Za-z0-9+/=]|%2B|%2F|%3D)+)
+                    (?:index|live)\?.*?\bchannelid=(?P<channel_id>(?:[A-Za-z0-9+/=]|%2B|%2F|%3D)+)
                 ).+?)\1''', webpage)
         if mobj is not None:
             info = {
@@ -3016,6 +3053,12 @@ class GenericIE(InfoExtractor):
         if openload_urls:
             return self.playlist_from_matches(
                 openload_urls, video_id, video_title, ie=OpenloadIE.ie_key())
+
+        # Look for Verystream embeds
+        verystream_urls = VerystreamIE._extract_urls(webpage)
+        if verystream_urls:
+            return self.playlist_from_matches(
+                verystream_urls, video_id, video_title, ie=VerystreamIE.ie_key())
 
         # Look for VideoPress embeds
         videopress_urls = VideoPressIE._extract_urls(webpage)
@@ -3212,8 +3255,8 @@ class GenericIE(InfoExtractor):
                 else:
                     formats.append({
                         'url': src,
-                        'ext': (mimetype2ext(src_type) or
-                                ext if ext in KNOWN_EXTENSIONS else 'mp4'),
+                        'ext': (mimetype2ext(src_type)
+                                or ext if ext in KNOWN_EXTENSIONS else 'mp4'),
                     })
             if formats:
                 self._sort_formats(formats)

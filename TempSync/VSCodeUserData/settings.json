@@ -63,5 +63,6 @@
     "explorer.confirmDelete": false,
     "files.eol": "\n",
     "extensions.ignoreRecommendations": false,
-    "remote.SSH.configFile": "D:\\Dev\\VSCode\\ssh\\ssh_config"
+    "remote.SSH.configFile": "D:\\Dev\\VSCode\\ssh\\ssh_config",
+    "update.mode": "manual"
 }
