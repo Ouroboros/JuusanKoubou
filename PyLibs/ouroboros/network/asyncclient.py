@@ -1,11 +1,13 @@
 from .. import fileio
 import asyncio
 
+_None = object()
+
 class AsyncClient(asyncio.Protocol):
-    def __init__(self, *, endian = fileio.FileStream.BIG_ENDIAN, loop = asyncio.get_event_loop()):
+    def __init__(self, *, endian = fileio.FileStream.BIG_ENDIAN, loop = _None):
         super().__init__()
 
-        self.loop              = loop
+        self.loop              = asyncio.get_event_loop() if loop is _None else loop
         self.transport         = None
         self.recvBuffer        = fileio.FileStream(b'')
         self.recvBuffer.Endian = endian
