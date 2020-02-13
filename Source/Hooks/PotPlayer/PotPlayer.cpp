@@ -121,13 +121,34 @@ BOOL UnInitialize(PVOID BaseAddress)
     return FALSE;
 }
 
-BOOL Initialize(PVOID BaseAddress)
+VOID Initialize2(PLDR_MODULE PotPlayer, BOOL Force);
+
+BOOL WINAPI PotPlayerDllMain(PVOID BaseAddress, ULONG Reason, PVOID Reserved)
 {
-    ml::MlInitialize();
+    BOOL Success;
+    PLDR_MODULE Self;
+    PIMAGE_NT_HEADERS NtHeaders;
 
-    LdrDisableThreadCalloutsForDll(BaseAddress);
+    Self = FindLdrModuleByHandle(BaseAddress);
+    NtHeaders = ImageNtHeadersFast(BaseAddress);
+    Self->EntryPoint = PtrAdd(BaseAddress, NtHeaders->OptionalHeader.AddressOfEntryPoint);
 
-    BaseAddress = FindLdrModuleByName(&USTR(L"PotPlayer.dll"))->DllBase;
+    Success = ((API_POINTER(PotPlayerDllMain))Self->EntryPoint)(BaseAddress, Reason, Reserved);
+
+    Initialize2(Self, TRUE);
+
+    return Success;
+}
+
+VOID Initialize2(PLDR_MODULE PotPlayer, BOOL Force)
+{
+    if (Force == FALSE && FLAG_OFF(PotPlayer->Flags, LDRP_PROCESS_ATTACH_CALLED))
+    {
+        PotPlayer->EntryPoint = PotPlayerDllMain;
+        return;
+    }
+
+    PVOID BaseAddress = PotPlayer->DllBase;
 
     Mp::PATCH_MEMORY_DATA p[] =
     {
@@ -139,6 +160,14 @@ BOOL Initialize(PVOID BaseAddress)
     Mp::PatchMemory(p, countof(p), BaseAddress);
 
     *(PULONG_PTR)&PpCmdTarget::StubOnCmdRange = p[0].Memory.Backup;
+}
+
+BOOL Initialize(PVOID BaseAddress)
+{
+    ml::MlInitialize();
+    LdrDisableThreadCalloutsForDll(BaseAddress);
+
+    Initialize2(FindLdrModuleByName(&USTR(L"PotPlayer.dll")), FALSE);
 
     return TRUE;
 }
